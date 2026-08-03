@@ -19,7 +19,12 @@ import (
 var db *gorm.DB
 
 func initDB() {
-	dsn := "jobhunter_user:jobhunter_password@tcp(127.0.0.1:3306)/jobhunter?charset=utf8mb4&parseTime=True&loc=Local"
+	dsn := os.Getenv("DB_DSN")
+	if dsn == "" {
+		// Fallback for local development with docker-compose
+		dsn = "jobhunter_user:jobhunter_password@tcp(127.0.0.1:3306)/jobhunter?charset=utf8mb4&parseTime=True&loc=Local"
+		log.Println("DB_DSN not set, using local docker-compose default")
+	}
 	var err error
 	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
