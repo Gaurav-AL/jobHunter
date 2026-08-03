@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ],
+  
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler", /* 👈 Ensures TS looks into node_modules properly */
+    "skipLibCheck": true           /* 👈 Tells TS to skip checking types inside node_modules */
+  }
+}
