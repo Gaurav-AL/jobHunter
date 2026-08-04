@@ -30,6 +30,7 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { auth } from '../firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { apiUrl } from '../api';
 
 const router = useRouter();
 const email = ref('');
@@ -41,7 +42,7 @@ const handleLogin = async () => {
     if (isRegistering.value) {
       await createUserWithEmailAndPassword(auth, email.value, password.value);
       // Here you would also call your backend API to save the user to MySQL
-      await fetch('http://localhost:8080/api/users/register', {
+      await fetch(apiUrl('/api/users/register'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.value, firebase_uid: auth.currentUser?.uid })

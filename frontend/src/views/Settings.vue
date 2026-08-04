@@ -52,6 +52,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { apiUrl } from '../api';
 
 const whatsapp = ref('');
 const cronFreq = ref('daily');
@@ -61,7 +62,7 @@ const sources = ref<any[]>([]);
 
 const fetchSources = async () => {
   try {
-    const res = await fetch('http://localhost:8080/api/sources');
+    const res = await fetch(apiUrl('/api/sources'));
     if (res.ok) {
       sources.value = await res.json();
     }
@@ -72,7 +73,7 @@ const fetchSources = async () => {
 
 const saveSettings = async () => {
   try {
-    await fetch('http://localhost:8080/api/users/settings', {
+    await fetch(apiUrl('/api/users/settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: 1, cron_frequency: cronFreq.value, whatsapp_number: whatsapp.value })
@@ -97,7 +98,7 @@ const uploadResume = async () => {
   formData.append('user_id', '1');
 
   try {
-    await fetch('http://localhost:8080/api/users/resume', {
+    await fetch(apiUrl('/api/users/resume'), {
       method: 'POST',
       body: formData
     });
@@ -109,7 +110,7 @@ const uploadResume = async () => {
 
 const addSource = async () => {
   try {
-    const res = await fetch('http://localhost:8080/api/sources', {
+    const res = await fetch(apiUrl('/api/sources'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ URL: newSource.value, Name: "Custom Source" })

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 
 	"backend/internal/repository"
@@ -66,8 +67,14 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 	// Allowed formats: pdf, doc, docx, png, jpg, jpeg
 	ext := filepath.Ext(file.Filename)
 	// Just save it locally for now
-	filePath := fmt.Sprintf("./uploads/%s%s", userID, ext)
-	
+	uploadDir := "./uploads"
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare upload directory"})
+		return
+	}
+
+	filePath := fmt.Sprintf("%s/%s%s", uploadDir, userID, ext)
+
 	if err := c.SaveUploadedFile(file, filePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
 		return

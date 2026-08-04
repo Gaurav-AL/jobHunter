@@ -30,6 +30,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { apiUrl } from '../api';
 
 const drafts = ref<any[]>([]);
 
@@ -38,7 +39,7 @@ const fetchDrafts = async () => {
   try {
     // In a real app, you would pass the actual UserID from the logged-in user
     // e.g. from Firebase token claims or a local mapping
-    const res = await fetch('http://localhost:8080/api/drafts?user_id=1');
+    const res = await fetch(apiUrl('/api/drafts?user_id=1'));
     if (res.ok) {
       drafts.value = await res.json();
     }
@@ -49,7 +50,7 @@ const fetchDrafts = async () => {
 
 const updateStatus = async (id: number, status: string) => {
   try {
-    const res = await fetch(`http://localhost:8080/api/drafts/${id}/status`, {
+    const res = await fetch(apiUrl(`/api/drafts/${id}/status`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status })
