@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"backend/internal/api"
 	"backend/internal/repository"
@@ -26,13 +27,30 @@ func initDB() {
 		log.Println("DB_DSN not set, using local docker-compose default")
 	}
 	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	for attempt := 1; attempt <= 30; attempt++ {
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		if err == nil {
+			sqlDB, dbErr := db.DB()
+			if dbErr == nil {
+				err = sqlDB.Ping()
+			} else {
+				err = dbErr
+			}
+		}
+
+		if err == nil {
+			break
+		}
+
+		log.Printf("Database is not ready yet, retrying in 2s (%d/30): %v", attempt, err)
+		time.Sleep(2 * time.Second)
+	}
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Failed to connect to database after retries: %v", err)
 	}
 
 	// Auto Migrate
-	err = db.AutoMigrate(&repository.User{}, &repository.AllowedSource{}, &repository.Job{}, &repository.JobDraft{})
+	err = db.AutoMigrate(&repository.User{}, &repository.AllowedSource{}, &repository.Job{}, &repository.JobMatch{}, &repository.JobDraft{})
 	if err != nil {
 		log.Fatalf("Failed to auto migrate: %v", err)
 	}

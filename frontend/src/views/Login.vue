@@ -41,12 +41,15 @@ const handleLogin = async () => {
   try {
     if (isRegistering.value) {
       await createUserWithEmailAndPassword(auth, email.value, password.value);
-      // Here you would also call your backend API to save the user to MySQL
-      await fetch(apiUrl('/api/users/register'), {
+      const res = await fetch(apiUrl('/api/users/register'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.value, firebase_uid: auth.currentUser?.uid })
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'Firebase login succeeded, but backend user registration failed');
+      }
     } else {
       await signInWithEmailAndPassword(auth, email.value, password.value);
     }

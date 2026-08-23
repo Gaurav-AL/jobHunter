@@ -1,24 +1,43 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
-/// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyDfvP0cGEcFM5w_X8bBnWWlqsQO89I5Fxw",
-  authDomain: "jobhunter-1d1b1.firebaseapp.com",
-  projectId: "jobhunter-1d1b1",
-  storageBucket: "jobhunter-1d1b1.firebasestorage.app",
-  messagingSenderId: "614690587404",
-  appId: "1:614690587404:web:78715803537736531e7f29",
-  measurementId: "G-0RLXE8BK3N"
+const requiredFirebaseEnv = {
+  VITE_FIREBASE_API_KEY: import.meta.env.VITE_FIREBASE_API_KEY,
+  VITE_FIREBASE_AUTH_DOMAIN: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  VITE_FIREBASE_PROJECT_ID: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  VITE_FIREBASE_STORAGE_BUCKET: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  VITE_FIREBASE_MESSAGING_SENDER_ID: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  VITE_FIREBASE_APP_ID: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-// Initialize Firebase
+const missingFirebaseEnv = Object.entries(requiredFirebaseEnv)
+  .filter(([, value]) => !value)
+  .map(([key]) => key);
+
+if (missingFirebaseEnv.length > 0) {
+  console.warn(`Missing Firebase env vars: ${missingFirebaseEnv.join(', ')}. Auth will not work until they are configured.`);
+}
+
+const firebaseConfig = {
+  apiKey: requiredFirebaseEnv.VITE_FIREBASE_API_KEY || 'demo-api-key',
+  authDomain: requiredFirebaseEnv.VITE_FIREBASE_AUTH_DOMAIN || 'demo.firebaseapp.com',
+  projectId: requiredFirebaseEnv.VITE_FIREBASE_PROJECT_ID || 'demo-project',
+  storageBucket: requiredFirebaseEnv.VITE_FIREBASE_STORAGE_BUCKET || 'demo.firebasestorage.app',
+  messagingSenderId: requiredFirebaseEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || '000000000000',
+  appId: requiredFirebaseEnv.VITE_FIREBASE_APP_ID || '1:000000000000:web:demo',
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+};
+
 const app = initializeApp(firebaseConfig);
 
-// Initialize Firebase services
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export const authReady = new Promise<void>((resolve) => {
+  const unsubscribe = onAuthStateChanged(auth, () => {
+    unsubscribe();
+    resolve();
+  });
+});
 
 export default app;

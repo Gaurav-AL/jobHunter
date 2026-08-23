@@ -12,6 +12,11 @@ type User struct {
 	Email          string `gorm:"size:255;uniqueIndex;not null"`
 	FirebaseUID    string `gorm:"size:255;uniqueIndex;not null"`
 	ResumeURL      string `gorm:"size:512"`                // URL to stored resume (e.g., local path or cloud storage)
+	ResumeText     string `gorm:"type:longtext"`           // Extracted resume text used for matching and drafting
+	ProfileSummary string `gorm:"type:text"`               // AI/user edited professional summary
+	TargetRoles    string `gorm:"type:text"`               // Comma/newline separated target roles
+	Skills         string `gorm:"type:text"`               // Comma/newline separated skills
+	Location       string `gorm:"size:255"`                // Preferred location or remote preference
 	CronFrequency  string `gorm:"size:32;default:'daily'"` // e.g., 'hourly', 'daily', 'weekly'
 	WhatsAppNumber string `gorm:"size:32"`                 // For WhatsApp notifications
 	CreatedAt      time.Time
@@ -38,6 +43,18 @@ type Job struct {
 	Description string `gorm:"type:text"`
 	URL         string `gorm:"size:512;uniqueIndex;not null"`
 	ScrapedAt   time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// JobMatch records a job that passed the resume/profile relevance filter.
+type JobMatch struct {
+	ID          uint   `gorm:"primaryKey"`
+	UserID      uint   `gorm:"not null;index:idx_user_job_match,unique"`
+	JobID       uint   `gorm:"not null;index:idx_user_job_match,unique"`
+	MatchScore  int    `gorm:"not null"`
+	MatchReason string `gorm:"type:text"`
+	Status      string `gorm:"size:32;default:'matched'"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

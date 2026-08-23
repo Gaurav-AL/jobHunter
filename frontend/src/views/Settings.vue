@@ -53,6 +53,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { apiUrl } from '../api';
+import { auth } from '../firebase';
 
 const whatsapp = ref('');
 const cronFreq = ref('daily');
@@ -72,12 +73,19 @@ const fetchSources = async () => {
 };
 
 const saveSettings = async () => {
+  const firebaseUID = auth.currentUser?.uid;
+  if (!firebaseUID) {
+    alert('Please log in before saving preferences.');
+    return;
+  }
+
   try {
-    await fetch(apiUrl('/api/users/settings'), {
+    const res = await fetch(apiUrl('/api/users/settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: 1, cron_frequency: cronFreq.value, whatsapp_number: whatsapp.value })
+      body: JSON.stringify({ firebase_uid: firebaseUID, cron_frequency: cronFreq.value, whatsapp_number: whatsapp.value })
     });
+    if (!res.ok) throw new Error('Failed to save settings');
     alert('Preferences saved successfully!');
   } catch (error) {
     alert('Failed to save preferences.');
@@ -93,15 +101,22 @@ const handleFileUpload = (event: Event) => {
 
 const uploadResume = async () => {
   if (!selectedFile.value) return;
+  const firebaseUID = auth.currentUser?.uid;
+  if (!firebaseUID) {
+    alert('Please log in before uploading a resume.');
+    return;
+  }
+
   const formData = new FormData();
   formData.append('resume', selectedFile.value);
-  formData.append('user_id', '1');
+  formData.append('firebase_uid', firebaseUID);
 
   try {
-    await fetch(apiUrl('/api/users/resume'), {
+    const res = await fetch(apiUrl('/api/users/resume'), {
       method: 'POST',
       body: formData
     });
+    if (!res.ok) throw new Error('Failed to upload resume');
     alert('Resume uploaded successfully!');
   } catch (error) {
     alert('Failed to upload resume.');

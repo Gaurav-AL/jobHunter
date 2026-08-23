@@ -1,84 +1,570 @@
 <template>
-  <div>
-    <div class="flex justify-between items-center mb-8">
-      <h2>Your Job Drafts</h2>
-      <button @click="fetchDrafts" class="btn btn-primary" style="padding: 0.5rem 1rem;">Refresh</button>
-    </div>
-
-    <div v-if="drafts.length === 0" class="glass-card text-center">
-      <p style="color: var(--text-secondary)">No job drafts available. Make sure your cron job is running and sources are added.</p>
-    </div>
-
-    <div class="grid">
-      <div v-for="draft in drafts" :key="draft.ID" class="glass-card flex flex-col justify-between">
-        <div>
-          <div class="flex justify-between items-center">
-            <h3>Job ID: {{ draft.JobID }}</h3>
-            <span :class="['badge', draft.Status]">{{ draft.Status }}</span>
-          </div>
-          <p class="draft-content">{{ draft.DraftContent }}</p>
-        </div>
-        
-        <div class="actions mt-4" v-if="draft.Status === 'pending'">
-          <button @click="updateStatus(draft.ID, 'applied')" class="btn btn-success">Apply</button>
-          <button @click="updateStatus(draft.ID, 'rejected')" class="btn btn-danger">Reject</button>
-        </div>
+  <div class="dashboard-shell">
+    <div class="page-header">
+      <div>
+        <p class="eyebrow">Job hunt workspace</p>
+        <h2>Your JobHunter dashboard</h2>
+      </div>
+      <div class="header-actions">
+        <button @click="refreshAll" class="btn btn-secondary" :disabled="loading">Refresh</button>
+        <button @click="runHuntNow" class="btn btn-primary" :disabled="runningHunt">
+          {{ runningHunt ? 'Running...' : 'Run Hunt Now' }}
+        </button>
+        <button @click="showPersonalisation = !showPersonalisation" class="btn btn-success">
+          Personalisation
+        </button>
       </div>
     </div>
+
+    <div class="status-grid">
+      <div class="glass-card stat-card">
+        <span class="stat-label">Cron status</span>
+        <strong>{{ dashboard?.scheduler_status?.running ? 'Running' : 'Unknown' }}</strong>
+        <small>{{ dashboard?.scheduler_status?.last_run_message || 'Waiting for first run.' }}</small>
+      </div>
+      <div class="glass-card stat-card">
+        <span class="stat-label">Allowed sources</span>
+        <strong>{{ sources.length }}</strong>
+        <small>{{ sources.length ? 'Career pages being tracked.' : 'Add company career pages to begin.' }}</small>
+      </div>
+      <div class="glass-card stat-card">
+        <span class="stat-label">Drafts</span>
+        <strong>{{ drafts.length }}</strong>
+        <small>{{ pendingDrafts }} pending review, {{ matchedJobs.length }} matched jobs.</small>
+      </div>
+      <div class="glass-card stat-card">
+        <span class="stat-label">AICC</span>
+        <strong>{{ dashboard?.integrations?.aicc_key ? 'Configured' : 'Missing key' }}</strong>
+        <small>Used for resume profiling and draft generation.</small>
+      </div>
+    </div>
+
+    <section v-if="showPersonalisation" class="glass-card personalisation-panel">
+      <div class="section-header">
+        <div>
+          <h3>Personalisation</h3>
+          <p>Edit your profile, upload resume text/docx, and choose company career pages.</p>
+        </div>
+        <button @click="showPersonalisation = false" class="btn btn-secondary">Close</button>
+      </div>
+
+      <div class="two-column">
+        <form @submit.prevent="saveProfile" class="form-stack">
+          <label for="summary">Profile summary</label>
+          <textarea id="summary" v-model="profile.profile_summary" class="input-field textarea" placeholder="Backend engineer with Go, Vue, distributed systems..."></textarea>
+
+          <label for="roles">Target roles</label>
+          <input id="roles" v-model="profile.target_roles" class="input-field" placeholder="Backend Engineer, Full Stack Engineer" />
+
+          <label for="skills">Skills</label>
+          <input id="skills" v-model="profile.skills" class="input-field" placeholder="Go, Vue, MySQL, Docker, LLM apps" />
+
+          <label for="location">Location preference</label>
+          <input id="location" v-model="profile.location" class="input-field" placeholder="Remote, Bengaluru, US timezone..." />
+
+          <label for="whatsapp">Mobile/WhatsApp notifications</label>
+          <input id="whatsapp" v-model="profile.whatsapp_number" class="input-field" placeholder="+91..." />
+
+          <label for="cron">Notification frequency</label>
+          <select id="cron" v-model="profile.cron_frequency" class="input-field">
+            <option value="hourly">Hourly</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+
+          <button type="submit" class="btn btn-primary">Save Profile</button>
+        </form>
+
+        <div class="form-stack">
+          <form @submit.prevent="uploadResume" class="upload-box">
+            <h4>Resume</h4>
+            <p>Upload `.pdf`, `.txt`, `.md`, or `.docx` for extraction. Scanned image resumes still need OCR.</p>
+            <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg" />
+            <button type="submit" class="btn btn-success" :disabled="!selectedFile || uploadingResume">
+              {{ uploadingResume ? 'Uploading...' : 'Upload Resume' }}
+            </button>
+            <small v-if="resumeMessage">{{ resumeMessage }}</small>
+          </form>
+
+          <form @submit.prevent="discoverSources" class="upload-box">
+            <h4>Company crawler</h4>
+            <p>Search a company/domain and add a reachable career page to your allowed sources.</p>
+            <div class="inline-form">
+              <input v-model="sourceQuery" class="input-field" placeholder="openai.com or OpenAI" />
+              <button type="submit" class="btn btn-primary" :disabled="discovering">Find</button>
+            </div>
+          </form>
+
+          <div class="candidate-list">
+            <button
+              v-for="candidate in candidates"
+              :key="candidate.url"
+              @click="addSource(candidate.url, candidate.name)"
+              class="source-candidate"
+              type="button"
+            >
+              <span>
+                <strong>{{ candidate.name }}</strong>
+                <small>{{ candidate.url }}</small>
+              </span>
+              <em>{{ candidate.status }}</em>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="content-grid">
+      <section class="glass-card">
+        <div class="section-header">
+          <div>
+            <h3>Allowed sources</h3>
+            <p>Career pages this account is tracking.</p>
+          </div>
+        </div>
+
+        <form @submit.prevent="addManualSource" class="inline-form">
+          <input v-model="newSourceUrl" class="input-field" type="url" placeholder="https://company.com/careers" required />
+          <input v-model="newSourceName" class="input-field" placeholder="Company name" />
+          <button type="submit" class="btn btn-primary">Add</button>
+        </form>
+
+        <div v-if="sources.length === 0" class="empty-state">
+          No sources yet. Add companies from Personalisation or paste a career URL above.
+        </div>
+        <ul v-else class="source-list">
+          <li v-for="source in sources" :key="source.ID">
+            <span>
+              <strong>{{ source.Name || source.URL }}</strong>
+              <a :href="source.URL" target="_blank" rel="noreferrer">{{ source.URL }}</a>
+            </span>
+            <em>{{ source.IsGlobal ? 'global' : 'personal' }}</em>
+          </li>
+        </ul>
+      </section>
+
+      <section class="glass-card">
+        <div class="section-header">
+          <div>
+            <h3>Profile signal</h3>
+            <p>Used to match and draft applications.</p>
+          </div>
+        </div>
+        <div class="profile-summary">
+          <p v-if="profile.profile_summary">{{ profile.profile_summary }}</p>
+          <p v-else class="empty-state">No profile summary yet. Add it manually or upload a text/docx resume.</p>
+          <dl>
+            <div><dt>Roles</dt><dd>{{ profile.target_roles || 'Not set' }}</dd></div>
+            <div><dt>Skills</dt><dd>{{ profile.skills || 'Not set' }}</dd></div>
+            <div><dt>Location</dt><dd>{{ profile.location || 'Not set' }}</dd></div>
+          </dl>
+        </div>
+      </section>
+    </div>
+
+    <section class="glass-card drafts-section">
+      <div class="section-header">
+        <div>
+          <h3>Filtered matched jobs</h3>
+          <p>Jobs kept after resume/profile matching. Drafts are generated from this filtered set.</p>
+        </div>
+      </div>
+
+      <div v-if="matchedJobs.length === 0" class="empty-state">
+        No matched jobs yet. Upload/extract your resume, add sources, then click Run Hunt Now.
+      </div>
+
+      <div class="match-grid">
+        <article v-for="job in matchedJobs" :key="job.ID" class="match-card">
+          <div>
+            <div class="draft-topline">
+              <h4>{{ job.JobTitle || `Job ID: ${job.JobID}` }}</h4>
+              <span class="score-badge">{{ job.MatchScore }}%</span>
+            </div>
+            <a v-if="job.JobURL" :href="job.JobURL" target="_blank" rel="noreferrer">{{ job.Company || job.JobURL }}</a>
+            <p>{{ job.MatchReason }}</p>
+          </div>
+          <button
+            v-if="job.SourceURL"
+            @click="addSource(job.SourceURL, job.Company || job.SourceURL)"
+            type="button"
+            class="btn btn-secondary"
+          >
+            Add Source
+          </button>
+        </article>
+      </div>
+    </section>
+
+    <section class="glass-card drafts-section">
+      <div class="section-header">
+        <div>
+          <h3>Your job drafts</h3>
+          <p>Review, apply, or reject generated opportunities from tracked sources.</p>
+        </div>
+      </div>
+
+      <div v-if="drafts.length === 0" class="empty-state">
+        No drafts yet. Add sources and click Run Hunt Now to fetch openings.
+      </div>
+
+      <div class="draft-grid">
+        <article v-for="draft in drafts" :key="draft.ID" class="draft-card">
+          <div>
+            <div class="draft-topline">
+              <h4>{{ draft.JobTitle || `Job ID: ${draft.JobID}` }}</h4>
+              <span :class="['badge', draft.Status]">{{ draft.Status }}</span>
+            </div>
+            <a v-if="draft.JobURL" :href="draft.JobURL" target="_blank" rel="noreferrer">{{ draft.Company || draft.JobURL }}</a>
+            <p class="draft-content">{{ draft.DraftContent }}</p>
+          </div>
+          <div class="actions" v-if="draft.Status === 'pending'">
+            <button @click="updateStatus(draft.ID, 'applied')" class="btn btn-success">Apply</button>
+            <button @click="updateStatus(draft.ID, 'rejected')" class="btn btn-danger">Reject</button>
+          </div>
+        </article>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { apiUrl } from '../api';
+import { auth, authReady } from '../firebase';
 
+const dashboard = ref<any>(null);
 const drafts = ref<any[]>([]);
+const sources = ref<any[]>([]);
+const matchedJobs = ref<any[]>([]);
+const candidates = ref<any[]>([]);
+const loading = ref(false);
+const runningHunt = ref(false);
+const discovering = ref(false);
+const uploadingResume = ref(false);
+const showPersonalisation = ref(false);
+const selectedFile = ref<File | null>(null);
+const resumeMessage = ref('');
+const sourceQuery = ref('');
+const newSourceUrl = ref('');
+const newSourceName = ref('');
 
-// We simulate fetching from the backend
-const fetchDrafts = async () => {
+const profile = reactive({
+  profile_summary: '',
+  target_roles: '',
+  skills: '',
+  location: '',
+  cron_frequency: 'daily',
+  whatsapp_number: '',
+});
+
+const pendingDrafts = computed(() => drafts.value.filter(draft => draft.Status === 'pending').length);
+
+const firebaseParams = async () => {
+  await authReady;
+  const firebaseUID = auth.currentUser?.uid;
+  if (!firebaseUID) throw new Error('Please log in again.');
+  return new URLSearchParams({ firebase_uid: firebaseUID });
+};
+
+const applyProfile = (user: any) => {
+  profile.profile_summary = user?.profile_summary || '';
+  profile.target_roles = user?.target_roles || '';
+  profile.skills = user?.skills || '';
+  profile.location = user?.location || '';
+  profile.cron_frequency = user?.cron_frequency || 'daily';
+  profile.whatsapp_number = user?.whatsapp_number || '';
+};
+
+const refreshAll = async () => {
+  loading.value = true;
   try {
-    // In a real app, you would pass the actual UserID from the logged-in user
-    // e.g. from Firebase token claims or a local mapping
-    const res = await fetch(apiUrl('/api/drafts?user_id=1'));
-    if (res.ok) {
-      drafts.value = await res.json();
+    const params = await firebaseParams();
+    const [dashboardRes, draftsRes, sourcesRes] = await Promise.all([
+      fetch(apiUrl(`/api/dashboard?${params.toString()}`)),
+      fetch(apiUrl(`/api/drafts?${params.toString()}`)),
+      fetch(apiUrl(`/api/sources?${params.toString()}`)),
+    ]);
+    if (dashboardRes.ok) {
+      dashboard.value = await dashboardRes.json();
+      applyProfile(dashboard.value.user);
+      matchedJobs.value = dashboard.value.matched_jobs || [];
     }
-  } catch (error) {
-    console.error("Failed to fetch drafts", error);
+    if (draftsRes.ok) drafts.value = await draftsRes.json();
+    if (sourcesRes.ok) sources.value = await sourcesRes.json();
+  } catch (error: any) {
+    alert(error.message || 'Failed to refresh dashboard.');
+  } finally {
+    loading.value = false;
+  }
+};
+
+const saveProfile = async () => {
+  const params = await firebaseParams();
+  const firebaseUID = params.get('firebase_uid');
+  const res = await fetch(apiUrl('/api/users/profile'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ firebase_uid: firebaseUID, ...profile }),
+  });
+  if (!res.ok) {
+    alert('Failed to save profile.');
+    return;
+  }
+  applyProfile(await res.json());
+  await refreshAll();
+};
+
+const handleFileUpload = (event: Event) => {
+  const target = event.target as HTMLInputElement;
+  selectedFile.value = target.files?.[0] || null;
+};
+
+const uploadResume = async () => {
+  if (!selectedFile.value) return;
+  uploadingResume.value = true;
+  resumeMessage.value = '';
+  try {
+    const params = await firebaseParams();
+    const formData = new FormData();
+    formData.append('resume', selectedFile.value);
+    formData.append('firebase_uid', params.get('firebase_uid') || '');
+
+    const res = await fetch(apiUrl('/api/users/resume'), { method: 'POST', body: formData });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Resume upload failed.');
+    resumeMessage.value = body.warning || `Extracted ${body.extracted_chars || 0} characters into your profile signal.`;
+    if (body.profile_summary) profile.profile_summary = body.profile_summary;
+    await refreshAll();
+  } catch (error: any) {
+    resumeMessage.value = error.message;
+  } finally {
+    uploadingResume.value = false;
+  }
+};
+
+const discoverSources = async () => {
+  discovering.value = true;
+  try {
+    const params = new URLSearchParams();
+    if (sourceQuery.value) params.set('query', sourceQuery.value);
+    const res = await fetch(apiUrl(`/api/sources/discover?${params.toString()}`));
+    if (res.ok) candidates.value = await res.json();
+  } finally {
+    discovering.value = false;
+  }
+};
+
+const addSource = async (url: string, name: string) => {
+  const params = await firebaseParams();
+  const res = await fetch(apiUrl('/api/sources'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ firebase_uid: params.get('firebase_uid'), url, name }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.error || 'Failed to add source.');
+    return;
+  }
+  await refreshAll();
+};
+
+const addManualSource = async () => {
+  await addSource(newSourceUrl.value, newSourceName.value || newSourceUrl.value);
+  newSourceUrl.value = '';
+  newSourceName.value = '';
+};
+
+const runHuntNow = async () => {
+  runningHunt.value = true;
+  try {
+    await fetch(apiUrl('/api/scheduler/run'), { method: 'POST' });
+    setTimeout(refreshAll, 2500);
+  } finally {
+    setTimeout(() => {
+      runningHunt.value = false;
+      refreshAll();
+    }, 5000);
   }
 };
 
 const updateStatus = async (id: number, status: string) => {
-  try {
-    const res = await fetch(apiUrl(`/api/drafts/${id}/status`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status })
-    });
-    if (res.ok) {
-      fetchDrafts();
-    }
-  } catch (error) {
-    console.error("Failed to update status", error);
-  }
+  const res = await fetch(apiUrl(`/api/drafts/${id}/status`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  if (res.ok) await refreshAll();
 };
 
-onMounted(() => {
-  fetchDrafts();
+onMounted(async () => {
+  await refreshAll();
+  await discoverSources();
 });
 </script>
 
 <style scoped>
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+.dashboard-shell {
+  display: flex;
+  flex-direction: column;
   gap: 1.5rem;
 }
+.page-header,
+.section-header,
+.header-actions,
+.inline-form,
+.draft-topline,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.eyebrow,
+.stat-label,
+small,
+.section-header p,
+.upload-box p,
+.empty-state,
+dt {
+  color: var(--text-secondary);
+}
+.eyebrow,
+.stat-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.status-grid,
+.content-grid,
+.two-column,
+.draft-grid {
+  display: grid;
+  gap: 1rem;
+}
+.status-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.content-grid,
+.two-column {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.stat-card {
+  display: flex;
+  min-height: 150px;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.stat-card strong {
+  font-size: 1.75rem;
+}
+.personalisation-panel {
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.form-stack,
+.upload-box,
+.profile-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+.inline-form .input-field {
+  margin-bottom: 0;
+}
+.btn-secondary {
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-primary);
+  border: 1px solid var(--glass-border);
+}
+.candidate-list,
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.source-candidate,
+.source-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.85rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 0.5rem;
+  background: rgba(15, 23, 42, 0.45);
+  color: var(--text-primary);
+  text-align: left;
+}
+.source-candidate {
+  cursor: pointer;
+}
+.source-candidate small,
+.source-list a {
+  display: block;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.source-list {
+  padding: 0;
+  list-style: none;
+}
+.source-list a,
+.draft-card a {
+  color: var(--accent-secondary);
+}
+.profile-summary dl {
+  display: grid;
+  gap: 0.75rem;
+}
+.profile-summary dd {
+  margin: 0;
+}
+.draft-grid,
+.match-grid {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.draft-card,
+.match-card {
+  display: flex;
+  min-height: 260px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 0.5rem;
+  background: rgba(15, 23, 42, 0.35);
+}
+.match-card {
+  min-height: 210px;
+}
+.match-card p {
+  margin-top: 0.75rem;
+  color: var(--text-secondary);
+}
+.score-badge {
+  flex: 0 0 auto;
+  padding: 0.3rem 0.7rem;
+  border-radius: 0.5rem;
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+  font-weight: 800;
+}
 .badge {
+  flex: 0 0 auto;
   padding: 0.25rem 0.75rem;
   border-radius: 9999px;
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
 }
 .badge.pending {
@@ -94,19 +580,34 @@ onMounted(() => {
   color: #ef4444;
 }
 .draft-content {
-  color: var(--text-secondary);
-  font-size: 0.9rem;
+  max-height: 210px;
   margin-top: 1rem;
-  white-space: pre-wrap;
-  max-height: 200px;
   overflow-y: auto;
-  padding-right: 0.5rem;
-}
-.actions {
-  display: flex;
-  gap: 1rem;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  white-space: pre-wrap;
 }
 .actions button {
   flex: 1;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+@media (max-width: 900px) {
+  .page-header,
+  .section-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .status-grid,
+  .content-grid,
+  .two-column {
+    grid-template-columns: 1fr;
+  }
+  .inline-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 </style>
