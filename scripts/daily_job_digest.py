@@ -6,6 +6,7 @@ import datetime as dt
 import html
 import json
 import os
+import re
 import smtplib
 import sys
 import time
@@ -28,7 +29,6 @@ PROFILE = {
         "distributed systems", "canary deployment", "observability", "integration testing",
         "database connection pooling", "production support", "concurrency",
     ],
-    "preferred_companies": ["Walmart", "Google", "NxtWave"],
     "location": os.getenv("JOB_LOCATION", "India"),
     "country": os.getenv("ADZUNA_COUNTRY", "in").lower(),
 }
@@ -36,7 +36,7 @@ QUERIES = [
     "backend engineer java", "software engineer backend", "golang developer",
     "python backend developer", "software development engineer",
     "platform engineer kubernetes", "site reliability engineer", "distributed systems engineer",
-    "software engineer Walmart", "software engineer Google", "software engineer NxtWave",
+    "cloud engineer", "microservices engineer",
 ]
 
 
@@ -81,23 +81,50 @@ def search_jobs() -> list[dict]:
         title = str(job.get("title", ""))
         description = str(job.get("description", ""))
         company_obj = job.get("company") or {}
-        company = str(company_obj.get("display_name", "Unknown company"))
         text = f"{title} {description}".lower()
         if not any(term in title.lower() for term in ("engineer", "developer", "sre", "programmer")):
             continue
         # Exclude clear senior/lead/management postings; preserve plausible associate/mid-level roles.
         if any(term in title.lower() for term in ("staff", "principal", "director", "engineering manager", "head of", "vice president", "vp ")):
             continue
-        skill_matches = [skill for skill in PROFILE["skills"] if skill in text]
+        skill_matches = [skill for skill in PROFILE["skills"] if re.search(r"(?<![a-z0-9])" + re.escape(skill) + r"(?![a-z0-9])", text)]
         if len(skill_matches) < 1:
             continue
-        company_matches = [name for name in PROFILE["preferred_companies"] if name.lower() in company.lower()]
         title_lower = title.lower()
-        experience = 0 if any(x in title_lower for x in ("junior", "entry level", "graduate", "associate")) else 1
-        score = len(skill_matches) + (5 if company_matches else 0) + (2 if experience == 0 else 0)
-        candidates.append((score, created, job, skill_matches, company_matches))
+        role_matches = sum(role in title_lower for role in PROFILE["roles"])
+        level_fit = 2 if any(term in title_lower for term in ("associate", "junior", "entry level", "mid-level", "sde i", "sde 1", "engineer ii")) else 0
+        age_days = max(0, (dt.datetime.now(dt.timezone.utc) - created).days)
+        freshness = max(0, 2 - age_days // 15)
+        score = len(skill_matches) + 2 * role_matches + level_fit + freshness
+        candidates.append((score, created, job, skill_matches))
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [format_job(item) for item in candidates[:30]]
+    return [format_job(item) for item in diversify_by_company(candidates, limit=30)]
+
+
+def diversify_by_company(candidates: list[tuple], limit: int) -> list[tuple]:
+    """Preserve fit ranking while spreading the digest across distinct employers."""
+    groups: dict[str, list[tuple]] = {}
+    for item in candidates:
+        employer = (item[2].get("company") or {}).get("display_name", "Unknown company")
+        key = " ".join(employer.casefold().split())
+        groups.setdefault(key, []).append(item)
+    # Prioritize employers whose best listing is the strongest match, then take one
+    # listing per employer per pass until the digest is full.
+    employers = sorted(groups, key=lambda key: (groups[key][0][0], groups[key][0][1]), reverse=True)
+    selected = []
+    round_index = 0
+    while len(selected) < limit:
+        added_this_round = False
+        for employer in employers:
+            if round_index < len(groups[employer]):
+                selected.append(groups[employer][round_index])
+                added_this_round = True
+                if len(selected) == limit:
+                    break
+        if not added_this_round:
+            break
+        round_index += 1
+    return selected
 
 
 def parse_date(value: str | None) -> dt.datetime | None:
@@ -113,7 +140,7 @@ def parse_date(value: str | None) -> dt.datetime | None:
 
 
 def format_job(item: tuple) -> dict:
-    score, created, job, skills, companies = item
+    score, created, job, skills = item
     location = (job.get("location") or {}).get("display_name", PROFILE["location"])
     return {
         "title": job.get("title", "Software role"),
@@ -122,7 +149,6 @@ def format_job(item: tuple) -> dict:
         "created": created.strftime("%Y-%m-%d"),
         "url": job.get("redirect_url", ""),
         "skills": skills[:8],
-        "preferred_company": bool(companies),
         "salary": salary_text(job),
         "score": score,
     }
@@ -162,7 +188,7 @@ def plain_body(jobs: list[dict], today: str) -> str:
     lines = [f"Your JobHunter matches for {today}", "", f"Found {len(jobs)} current matches from the last 30 days.", ""]
     for i, job in enumerate(jobs, 1):
         lines.extend([f"{i}. {job['title']} — {job['company']}", f"   {job['location']} | posted {job['created']} | salary: {job['salary']}", f"   Resume fit: {', '.join(job['skills'])}", f"   Apply: {job['url']}", ""])
-    lines.append("Matches are ranked from resume evidence (Go, Java, Python, C++, distributed systems, microservices, Kubernetes, cloud, production reliability, and related experience). Review each listing and tailor your application before submitting. JobHunter does not submit applications for you.")
+    lines.append("Matches are ranked by resume-skill fit, role level, and freshness, with results spread across distinct employers where possible. Review each listing and tailor your application before submitting. JobHunter does not submit applications for you.")
     return "\n".join(lines)
 
 
@@ -170,7 +196,7 @@ def html_body(jobs: list[dict], today: str) -> str:
     cards = []
     for i, job in enumerate(jobs, 1):
         cards.append(f"<li><h3>{i}. {html.escape(job['title'])} — {html.escape(job['company'])}</h3><p>{html.escape(job['location'])} · Posted {html.escape(job['created'])} · Salary: {html.escape(job['salary'])}</p><p>Resume fit: {html.escape(', '.join(job['skills']))}</p><p><a href=\"{html.escape(job['url'], quote=True)}\">Open official listing</a></p></li>")
-    note = "Preferred companies are highlighted in the ranking when matching listings are available: Walmart, Google, and NxtWave."
+    note = "Employers are not preferred or excluded. The list is ranked by resume-skill fit and freshness, then spread across employers where enough distinct companies have matching listings."
     return f"<html><body><h1>JobHunter matches — {html.escape(today)}</h1><p>{len(jobs)} recent roles matching your resume preferences.</p><p>{html.escape(note)}</p><ol>{''.join(cards)}</ol><p>Listings are from Adzuna’s job ad search and may redirect to a company or job-board page. Confirm that the employer is still accepting applications. JobHunter does not submit applications.</p></body></html>"
 
 
