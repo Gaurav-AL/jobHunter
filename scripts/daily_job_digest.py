@@ -97,7 +97,7 @@ def search_jobs() -> list[dict]:
         score = len(skill_matches) + (5 if company_matches else 0) + (2 if experience == 0 else 0)
         candidates.append((score, created, job, skill_matches, company_matches))
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [format_job(item) for item in candidates[:20]]
+    return [format_job(item) for item in candidates[:30]]
 
 
 def parse_date(value: str | None) -> dt.datetime | None:
