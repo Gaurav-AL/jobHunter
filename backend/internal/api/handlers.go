@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"backend/internal/repository"
 	"backend/internal/scheduler"
@@ -24,11 +25,14 @@ import (
 
 func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	api := r.Group("/api")
+	api.Use(FirebaseAuth())
 
 	// Users
 	api.POST("/users/register", func(c *gin.Context) { RegisterUser(c, db) })
 	api.POST("/users/resume", func(c *gin.Context) { UploadResume(c, db) })
 	api.POST("/users/settings", func(c *gin.Context) { UpdateSettings(c, db) })
+	api.POST("/users/phone/verify", func(c *gin.Context) { SendPhoneVerification(c, db) })
+	api.POST("/users/phone/confirm", func(c *gin.Context) { ConfirmPhoneVerification(c, db) })
 	api.GET("/users/profile", func(c *gin.Context) { GetProfile(c, db) })
 	api.POST("/users/profile", func(c *gin.Context) { UpdateProfile(c, db) })
 	api.GET("/dashboard", func(c *gin.Context) { GetDashboard(c, db) })
@@ -68,6 +72,14 @@ func resolveUserID(db *gorm.DB, userIDValue, firebaseUID string) (uint, error) {
 	return user.ID, nil
 }
 
+func authenticatedUserID(c *gin.Context, db *gorm.DB) (uint, error) {
+	uid := c.GetString("firebase_uid")
+	if uid == "" {
+		return 0, fmt.Errorf("authenticated Firebase user is required")
+	}
+	return resolveUserID(db, "", uid)
+}
+
 type RegisterRequest struct {
 	Email       string `json:"email" binding:"required"`
 	FirebaseUID string `json:"firebase_uid" binding:"required"`
@@ -80,9 +92,13 @@ func RegisterUser(c *gin.Context, db *gorm.DB) {
 		return
 	}
 
+	if req.FirebaseUID != c.GetString("firebase_uid") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Firebase identity does not match the authenticated account"})
+		return
+	}
 	user := repository.User{
 		Email:       req.Email,
-		FirebaseUID: req.FirebaseUID,
+		FirebaseUID: c.GetString("firebase_uid"),
 	}
 
 	if err := db.Where("firebase_uid = ?", req.FirebaseUID).FirstOrCreate(&user).Error; err != nil {
@@ -94,7 +110,8 @@ func RegisterUser(c *gin.Context, db *gorm.DB) {
 }
 
 func UploadResume(c *gin.Context, db *gorm.DB) {
-	userID, err := resolveUserID(db, c.PostForm("user_id"), c.PostForm("firebase_uid"))
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 12<<20)
+	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -167,11 +184,64 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 	})
 }
 
+type phoneVerificationRequest struct {
+	Phone string `json:"phone" binding:"required"`
+	Code  string `json:"code"`
+}
+
+func validE164(phone string) bool {
+	return regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`).MatchString(strings.TrimSpace(phone))
+}
+
+func SendPhoneVerification(c *gin.Context, db *gorm.DB) {
+	if _, err := authenticatedUserID(c, db); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var req phoneVerificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil || !validE164(req.Phone) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Enter a valid mobile number in international E.164 format, for example +14155552671"})
+		return
+	}
+	if err := services.RequestPhoneVerification(strings.TrimSpace(req.Phone)); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"message": "Verification code requested. Check your SMS and enter the code here."})
+}
+
+func ConfirmPhoneVerification(c *gin.Context, db *gorm.DB) {
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var req phoneVerificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil || !validE164(req.Phone) || strings.TrimSpace(req.Code) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "A valid mobile number and verification code are required"})
+		return
+	}
+	approved, err := services.CheckPhoneVerification(strings.TrimSpace(req.Phone), strings.TrimSpace(req.Code))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	if !approved {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "That verification code is incorrect or expired"})
+		return
+	}
+	if err := db.Model(&repository.User{}).Where("id = ?", userID).Updates(map[string]any{"whatsapp_number": strings.TrimSpace(req.Phone), "phone_verified": true}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not save verified number"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Mobile number verified", "phone_verified": true})
+}
+
 type SettingsRequest struct {
-	UserID         uint   `json:"user_id"`
-	FirebaseUID    string `json:"firebase_uid"`
-	CronFrequency  string `json:"cron_frequency"`
-	WhatsAppNumber string `json:"whatsapp_number"`
+	UserID        uint   `json:"user_id"`
+	FirebaseUID   string `json:"firebase_uid"`
+	CronFrequency string `json:"cron_frequency"`
+	SMSOptIn      bool   `json:"sms_opt_in"`
 }
 
 func UpdateSettings(c *gin.Context, db *gorm.DB) {
@@ -181,19 +251,28 @@ func UpdateSettings(c *gin.Context, db *gorm.DB) {
 		return
 	}
 
-	userIDValue := ""
-	if req.UserID != 0 {
-		userIDValue = strconv.FormatUint(uint64(req.UserID), 10)
-	}
-	userID, err := resolveUserID(db, userIDValue, req.FirebaseUID)
+	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := db.Model(&repository.User{}).Where("id = ?", userID).Updates(repository.User{
-		CronFrequency:  req.CronFrequency,
-		WhatsAppNumber: req.WhatsAppNumber,
+	var user repository.User
+	if err := db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	if req.CronFrequency != "hourly" && req.CronFrequency != "daily" && req.CronFrequency != "weekly" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cron_frequency must be hourly, daily, or weekly"})
+		return
+	}
+	if req.SMSOptIn && (!user.PhoneVerified || user.WhatsAppNumber == "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Verify your mobile number before enabling SMS alerts"})
+		return
+	}
+	if err := db.Model(&user).Updates(map[string]any{
+		"cron_frequency": req.CronFrequency,
+		"sms_opt_in":     req.SMSOptIn,
 	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update settings"})
 		return
@@ -202,23 +281,13 @@ func UpdateSettings(c *gin.Context, db *gorm.DB) {
 }
 
 func GetSources(c *gin.Context, db *gorm.DB) {
-	var sources []repository.AllowedSource
-	firebaseUID := c.Query("firebase_uid")
-	if firebaseUID != "" {
-		userID, err := resolveUserID(db, c.Query("user_id"), firebaseUID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if err := db.Where("is_global = ? OR user_id = ?", true, userID).Order("created_at DESC").Find(&sources).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch sources"})
-			return
-		}
-		c.JSON(http.StatusOK, sources)
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
-
-	if err := db.Order("created_at DESC").Find(&sources).Error; err != nil {
+	var sources []repository.AllowedSource
+	if err := db.Where("is_global = ? OR user_id = ?", true, userID).Order("created_at DESC").Find(&sources).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch sources"})
 		return
 	}
@@ -247,8 +316,15 @@ func AddSource(c *gin.Context, db *gorm.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "url is required"})
 		return
 	}
-	if !strings.HasPrefix(sourceURL, "http://") && !strings.HasPrefix(sourceURL, "https://") {
-		sourceURL = "https://" + sourceURL
+	provider, boardToken, canonicalURL, parseErr := scraper.ParseBoardURL(sourceURL)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": parseErr.Error()})
+		return
+	}
+	sourceURL = canonicalURL
+	if req.IsGlobal {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Global source creation requires an administrator"})
+		return
 	}
 	sourceName := strings.TrimSpace(req.Name)
 	if sourceName == "" {
@@ -258,57 +334,62 @@ func AddSource(c *gin.Context, db *gorm.DB) {
 		sourceName = sourceURL
 	}
 
-	var userID *uint
-	if !req.IsGlobal {
-		userIDValue := ""
-		if req.UserID != 0 {
-			userIDValue = strconv.FormatUint(uint64(req.UserID), 10)
-		}
-		resolvedID, err := resolveUserID(db, userIDValue, req.FirebaseUID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		userID = &resolvedID
+	ownerID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
 	}
+	userID := &ownerID
 
 	source := repository.AllowedSource{
-		URL:      sourceURL,
-		Name:     sourceName,
-		IsGlobal: req.IsGlobal,
-		UserID:   userID,
+		URL:        sourceURL,
+		Name:       sourceName,
+		Provider:   provider,
+		BoardToken: boardToken,
+		IsGlobal:   false,
+		UserID:     userID,
 	}
 	if err := db.Create(&source).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create source. It may already exist."})
 		return
 	}
-	c.JSON(http.StatusOK, source)
+	c.JSON(http.StatusCreated, source)
 }
 
 type DraftView struct {
-	ID           uint   `json:"ID"`
-	JobID        uint   `json:"JobID"`
-	DraftContent string `json:"DraftContent"`
-	Status       string `json:"Status"`
-	JobTitle     string `json:"JobTitle"`
-	JobURL       string `json:"JobURL"`
-	Company      string `json:"Company"`
+	ID             uint      `json:"ID"`
+	JobID          uint      `json:"JobID"`
+	DraftContent   string    `json:"DraftContent"`
+	TailoredResume string    `json:"TailoredResume"`
+	Status         string    `json:"Status"`
+	JobTitle       string    `json:"JobTitle"`
+	JobURL         string    `json:"JobURL"`
+	ApplyURL       string    `json:"ApplyURL"`
+	Location       string    `json:"Location"`
+	Company        string    `json:"Company"`
+	JobActive      bool      `json:"JobActive"`
+	LastSeenAt     time.Time `json:"LastSeenAt"`
 }
 
 type MatchedJobView struct {
-	ID          uint   `json:"ID"`
-	JobID       uint   `json:"JobID"`
-	JobTitle    string `json:"JobTitle"`
-	JobURL      string `json:"JobURL"`
-	Company     string `json:"Company"`
-	SourceURL   string `json:"SourceURL"`
-	MatchScore  int    `json:"MatchScore"`
-	MatchReason string `json:"MatchReason"`
-	Status      string `json:"Status"`
+	ID          uint       `json:"ID"`
+	JobID       uint       `json:"JobID"`
+	JobTitle    string     `json:"JobTitle"`
+	JobURL      string     `json:"JobURL"`
+	ApplyURL    string     `json:"ApplyURL"`
+	Location    string     `json:"Location"`
+	PublishedAt *time.Time `json:"PublishedAt"`
+	LastSeenAt  time.Time  `json:"LastSeenAt"`
+	JobActive   bool       `json:"JobActive"`
+	Company     string     `json:"Company"`
+	SourceURL   string     `json:"SourceURL"`
+	MatchScore  int        `json:"MatchScore"`
+	MatchReason string     `json:"MatchReason"`
+	Status      string     `json:"Status"`
 }
 
 func GetDrafts(c *gin.Context, db *gorm.DB) {
-	userID, err := resolveUserID(db, c.Query("user_id"), c.Query("firebase_uid"))
+	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -329,20 +410,25 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 			db.First(&source, job.SourceID)
 		}
 		views = append(views, DraftView{
-			ID:           draft.ID,
-			JobID:        draft.JobID,
-			DraftContent: draft.DraftContent,
-			Status:       draft.Status,
-			JobTitle:     job.Title,
-			JobURL:       job.URL,
-			Company:      source.Name,
+			ID:             draft.ID,
+			JobID:          draft.JobID,
+			DraftContent:   draft.DraftContent,
+			TailoredResume: draft.TailoredResume,
+			Status:         draft.Status,
+			JobTitle:       job.Title,
+			JobURL:         job.URL,
+			ApplyURL:       job.ApplyURL,
+			Location:       job.Location,
+			Company:        source.Name,
+			JobActive:      job.IsActive,
+			LastSeenAt:     job.LastSeenAt,
 		})
 	}
 	c.JSON(http.StatusOK, views)
 }
 
 func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
-	userID, err := resolveUserID(db, c.Query("user_id"), c.Query("firebase_uid"))
+	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -359,6 +445,9 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 		var job repository.Job
 		var source repository.AllowedSource
 		db.First(&job, match.JobID)
+		if !job.IsActive {
+			continue
+		}
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
@@ -367,6 +456,11 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 			JobID:       match.JobID,
 			JobTitle:    job.Title,
 			JobURL:      job.URL,
+			ApplyURL:    job.ApplyURL,
+			Location:    job.Location,
+			PublishedAt: job.PublishedAt,
+			LastSeenAt:  job.LastSeenAt,
+			JobActive:   job.IsActive,
 			Company:     source.Name,
 			SourceURL:   source.URL,
 			MatchScore:  match.MatchScore,
@@ -386,9 +480,34 @@ func UpdateDraftStatus(c *gin.Context, db *gorm.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	if err := db.Model(&repository.JobDraft{}).Where("id = ?", draftID).Update("status", req.Status).Error; err != nil {
+	if req.Status != "applied" && req.Status != "rejected" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be applied or rejected"})
+		return
+	}
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status == "applied" {
+		var draft repository.JobDraft
+		if err := db.Where("id = ? AND user_id = ?", draftID, userID).First(&draft).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Draft not found"})
+			return
+		}
+		var job repository.Job
+		if err := db.First(&job, draft.JobID).Error; err != nil || !job.IsActive || job.ApplyURL == "" {
+			c.JSON(http.StatusConflict, gin.H{"error": "This listing is no longer confirmed active or has no application URL"})
+			return
+		}
+	}
+	result := db.Model(&repository.JobDraft{}).Where("id = ? AND user_id = ?", draftID, userID).Update("status", req.Status)
+	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update status"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Draft not found"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Status updated"})
@@ -415,7 +534,7 @@ func IntegrationHealth(c *gin.Context, db *gorm.DB) {
 }
 
 func GetProfile(c *gin.Context, db *gorm.DB) {
-	userID, err := resolveUserID(db, c.Query("user_id"), c.Query("firebase_uid"))
+	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -436,18 +555,13 @@ func UpdateProfile(c *gin.Context, db *gorm.DB) {
 		TargetRoles    string `json:"target_roles"`
 		Skills         string `json:"skills"`
 		Location       string `json:"location"`
-		WhatsAppNumber string `json:"whatsapp_number"`
 		CronFrequency  string `json:"cron_frequency"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userIDValue := ""
-	if req.UserID != 0 {
-		userIDValue = strconv.FormatUint(uint64(req.UserID), 10)
-	}
-	userID, err := resolveUserID(db, userIDValue, req.FirebaseUID)
+	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -457,7 +571,6 @@ func UpdateProfile(c *gin.Context, db *gorm.DB) {
 		TargetRoles:    req.TargetRoles,
 		Skills:         req.Skills,
 		Location:       req.Location,
-		WhatsAppNumber: req.WhatsAppNumber,
 		CronFrequency:  req.CronFrequency,
 	}
 	if err := db.Model(&repository.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
@@ -470,7 +583,7 @@ func UpdateProfile(c *gin.Context, db *gorm.DB) {
 }
 
 func GetDashboard(c *gin.Context, db *gorm.DB) {
-	userID, err := resolveUserID(db, c.Query("user_id"), c.Query("firebase_uid"))
+	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -490,6 +603,9 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 		var job repository.Job
 		var source repository.AllowedSource
 		db.First(&job, match.JobID)
+		if !job.IsActive {
+			continue
+		}
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
@@ -498,6 +614,11 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 			JobID:       match.JobID,
 			JobTitle:    job.Title,
 			JobURL:      job.URL,
+			ApplyURL:    job.ApplyURL,
+			Location:    job.Location,
+			PublishedAt: job.PublishedAt,
+			LastSeenAt:  job.LastSeenAt,
+			JobActive:   job.IsActive,
 			Company:     source.Name,
 			SourceURL:   source.URL,
 			MatchScore:  match.MatchScore,
@@ -543,6 +664,8 @@ func profileResponse(user repository.User) gin.H {
 		"location":        user.Location,
 		"cron_frequency":  user.CronFrequency,
 		"whatsapp_number": user.WhatsAppNumber,
+		"phone_verified":  user.PhoneVerified,
+		"sms_opt_in":      user.SMSOptIn,
 	}
 }
 

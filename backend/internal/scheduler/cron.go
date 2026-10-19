@@ -22,22 +22,14 @@ type Status struct {
 
 var (
 	statusMu sync.RWMutex
-	status   = Status{
-		Running:        false,
-		LastRunMessage: "Scheduler has not run yet.",
-		NextRunHint:    "Runs every 1 minute in this prototype.",
-	}
+	status   = Status{Running: false, LastRunMessage: "Scheduler has not run yet.", NextRunHint: "Checks supported ATS job boards every 6 hours."}
 )
 
-// StartScheduler starts a simple loop that checks for scraping jobs
 func StartScheduler(db *gorm.DB) {
-	log.Println("Starting background scheduler...")
-
-	// In a real app, use something like github.com/robfig/cron/v3
-	ticker := time.NewTicker(1 * time.Minute)
+	log.Println("Starting job discovery scheduler")
+	ticker := time.NewTicker(6 * time.Hour)
 	go func() {
-		for {
-			<-ticker.C
+		for range ticker.C {
 			RunScrapingCycle(db)
 		}
 	}()
@@ -54,97 +46,107 @@ func GetStatus() Status {
 func RunScrapingCycle(db *gorm.DB) {
 	statusMu.Lock()
 	status.LastRunAt = time.Now()
-	status.LastRunMessage = "Running job hunt..."
+	status.LastRunMessage = "Checking published job boards..."
 	statusMu.Unlock()
-
-	discoveredJobs := 0
-	matchedJobs := 0
-	createdDrafts := 0
-
-	// 1. Get all allowed sources
+	discoveredJobs, matchedJobs, createdDrafts := 0, 0, 0
 	var sources []repository.AllowedSource
 	if err := db.Find(&sources).Error; err != nil {
 		log.Printf("Error fetching sources: %v", err)
-		updateStatus("Failed to fetch sources: " + err.Error())
+		updateStatus("Failed to fetch sources.")
 		return
 	}
-
 	for _, source := range sources {
-		// 2. Scrape Job
 		jobs, err := scraper.ScrapeJobs(source.URL)
 		if err != nil {
-			log.Printf("Failed to scrape %s: %v", source.URL, err)
+			log.Printf("Failed to fetch source %s: %v", source.URL, err)
 			continue
 		}
-
-		// 3. Find interested users. Global sources apply to all users; personal sources apply to the owner.
-		var users []repository.User
-		if source.IsGlobal || source.UserID == nil {
-			db.Find(&users)
-		} else {
-			db.Where("id = ?", *source.UserID).Find(&users)
-		}
-
+		seenURLs := make([]string, 0, len(jobs))
 		for _, job := range jobs {
 			job.SourceID = source.ID
+			seenURLs = append(seenURLs, job.URL)
 			var existing repository.Job
-			if err := db.Where("url = ?", job.URL).FirstOrCreate(&existing, job).Error; err != nil {
-				log.Printf("Failed to save job %s: %v", job.URL, err)
+			err := db.Where("url = ?", job.URL).First(&existing).Error
+			if err == gorm.ErrRecordNotFound {
+				if err = db.Create(job).Error; err != nil {
+					log.Printf("Failed to insert job %s: %v", job.URL, err)
+					continue
+				}
+				existing = *job
+			} else if err != nil {
+				log.Printf("Failed to look up job %s: %v", job.URL, err)
 				continue
+			} else {
+				jobID := existing.ID
+				if err = db.Model(&existing).Updates(map[string]any{"source_id": source.ID, "external_id": job.ExternalID, "title": job.Title, "description": job.Description, "apply_url": job.ApplyURL, "location": job.Location, "published_at": job.PublishedAt, "last_seen_at": job.LastSeenAt, "scraped_at": job.ScrapedAt, "is_active": true}).Error; err != nil {
+					log.Printf("Failed to refresh job %s: %v", job.URL, err)
+					continue
+				}
+				existing = *job
+				existing.ID = jobID
 			}
 			discoveredJobs++
-
+			var users []repository.User
+			if source.IsGlobal || source.UserID == nil {
+				if err := db.Find(&users).Error; err != nil {
+					log.Printf("Failed to read user profiles: %v", err)
+					continue
+				}
+			} else if err := db.Where("id = ?", *source.UserID).Find(&users).Error; err != nil {
+				log.Printf("Failed to read source owner profile: %v", err)
+				continue
+			}
 			for _, user := range users {
 				match := services.MatchJobToProfile(user, existing)
 				if match.Score < 25 {
-					log.Printf("Skipping low-match job %d for user %d: score=%d", existing.ID, user.ID, match.Score)
 					continue
 				}
-				var existingMatch repository.JobMatch
-				db.Where("user_id = ? AND job_id = ?", user.ID, existing.ID).FirstOrCreate(&existingMatch, repository.JobMatch{
-					UserID:      user.ID,
-					JobID:       existing.ID,
-					MatchScore:  match.Score,
-					MatchReason: match.Reason,
-					Status:      "matched",
-				})
-				if existingMatch.ID != 0 {
-					db.Model(&existingMatch).Updates(repository.JobMatch{
-						MatchScore:  match.Score,
-						MatchReason: match.Reason,
-					})
+				var matchRecord repository.JobMatch
+				result := db.Where("user_id = ? AND job_id = ?", user.ID, existing.ID).FirstOrCreate(&matchRecord, repository.JobMatch{UserID: user.ID, JobID: existing.ID, MatchScore: match.Score, MatchReason: match.Reason, Status: "matched"})
+				if result.Error != nil {
+					log.Printf("Failed to save job match: %v", result.Error)
+					continue
+				}
+				if result.RowsAffected == 0 {
+					db.Model(&matchRecord).Updates(map[string]any{"match_score": match.Score, "match_reason": match.Reason})
 				}
 				matchedJobs++
-
-				var existingDraft repository.JobDraft
-				if err := db.Where("user_id = ? AND job_id = ?", user.ID, existing.ID).First(&existingDraft).Error; err == nil {
+				var draft repository.JobDraft
+				draftErr := db.Where("user_id = ? AND job_id = ?", user.ID, existing.ID).First(&draft).Error
+				if draftErr == gorm.ErrRecordNotFound {
+					profileText := buildProfileText(user)
+					coverLetter, coverErr := services.GenerateDraft(profileText, existing.Description)
+					if coverErr != nil {
+						log.Printf("Cover letter generation unavailable for user %d job %d: %v", user.ID, existing.ID, coverErr)
+						coverLetter = "Review this official job posting and write a concise application note using only verified details from your resume."
+					}
+					roleResume, resumeErr := services.GenerateTailoredResume(profileText, existing.Title, existing.Description)
+					if resumeErr != nil {
+						log.Printf("Resume tailoring unavailable for user %d job %d: %v", user.ID, existing.ID, resumeErr)
+						roleResume = services.BuildRoleFocusedResume(user, existing.Title, existing.Description)
+					}
+					draft = repository.JobDraft{UserID: user.ID, JobID: existing.ID, DraftContent: coverLetter, TailoredResume: roleResume, Status: "pending"}
+					if err := db.Create(&draft).Error; err != nil {
+						log.Printf("Failed to create draft: %v", err)
+						continue
+					}
+					createdDrafts++
+				} else if draftErr != nil {
+					log.Printf("Failed to load draft for user %d job %d: %v", user.ID, existing.ID, draftErr)
 					continue
 				}
-
-				resumeText := buildProfileText(user)
-
-				draftContent, err := services.GenerateDraft(resumeText, existing.Description)
-				if err != nil {
-					log.Printf("AICC generation failed for user %d: %v", user.ID, err)
-					draftContent = "A matching job was discovered. AICC draft generation is unavailable right now, so please review the job manually."
-				}
-
-				draft := repository.JobDraft{
-					UserID:       user.ID,
-					JobID:        existing.ID,
-					DraftContent: draftContent,
-					Status:       "pending",
-				}
-				if err := db.Create(&draft).Error; err == nil {
-					createdDrafts++
-				}
-
-				// 4. Send Notification
-				services.SendNotification(user.ID, user.Email, user.WhatsAppNumber, existing.Title)
+				sendJobNotification(db, user, source, existing)
 			}
 		}
+		// Only a successful ATS response can close jobs that disappeared from the public board.
+		query := db.Model(&repository.Job{}).Where("source_id = ?", source.ID)
+		if len(seenURLs) > 0 {
+			query = query.Where("url NOT IN ?", seenURLs)
+		}
+		if err := query.Update("is_active", false).Error; err != nil {
+			log.Printf("Failed to close stale jobs for source %d: %v", source.ID, err)
+		}
 	}
-
 	updateStatus(logMessage(discoveredJobs, matchedJobs, createdDrafts))
 }
 
@@ -162,14 +164,11 @@ func buildProfileText(user repository.User) string {
 	if user.Location != "" {
 		text += "\nLocation Preference: " + user.Location
 	}
-	if text == "" {
-		text = "Candidate profile is incomplete. Generate a concise review note and ask the user to complete profile personalization."
-	}
 	return text
 }
 
 func logMessage(discoveredJobs, matchedJobs, createdDrafts int) string {
-	return "Last run completed. Jobs discovered: " + strconv.Itoa(discoveredJobs) + ", matches kept: " + strconv.Itoa(matchedJobs) + ", drafts created: " + strconv.Itoa(createdDrafts) + "."
+	return "ATS listings currently published: " + strconv.Itoa(discoveredJobs) + ", profile matches: " + strconv.Itoa(matchedJobs) + ", new resume/application drafts: " + strconv.Itoa(createdDrafts) + "."
 }
 
 func updateStatus(message string) {
@@ -177,4 +176,24 @@ func updateStatus(message string) {
 	defer statusMu.Unlock()
 	status.LastRunAt = time.Now()
 	status.LastRunMessage = message
+}
+
+func sendJobNotification(db *gorm.DB, user repository.User, source repository.AllowedSource, job repository.Job) {
+	if !user.SMSOptIn || !user.PhoneVerified || user.WhatsAppNumber == "" {
+		return
+	}
+	var previous repository.NotificationDelivery
+	err := db.Where("user_id = ? AND job_id = ? AND channel = ?", user.ID, job.ID, "sms").Order("created_at DESC").First(&previous).Error
+	if err == nil && previous.Status != "failed" && previous.Status != "undelivered" && previous.Status != "not_configured" {
+		return
+	}
+	status, providerID, sendErr := services.SendJobSMS(user.WhatsAppNumber, source.Name, job.Title, job.ApplyURL)
+	delivery := repository.NotificationDelivery{UserID: user.ID, JobID: job.ID, Channel: "sms", Status: status, ProviderMessageID: providerID}
+	if sendErr != nil {
+		delivery.Error = sendErr.Error()
+		log.Printf("SMS notification failed for user %d: %v", user.ID, sendErr)
+	}
+	if err := db.Create(&delivery).Error; err != nil {
+		log.Printf("Failed to record SMS delivery status: %v", err)
+	}
 }

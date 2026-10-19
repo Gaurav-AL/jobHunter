@@ -1,153 +1,149 @@
 <template>
   <div class="settings-container grid gap-4">
-    <!-- Profile & Preferences -->
     <div class="glass-card">
       <h2>Profile & Preferences</h2>
+      <p>Job alerts are sent by SMS after you verify your number and opt in.</p>
       <form @submit.prevent="saveSettings" class="mt-4">
-        <label for="whatsapp">WhatsApp Number (For free notifications)</label>
-        <input type="text" id="whatsapp" v-model="whatsapp" class="input-field" placeholder="+1234567890" />
-        
-        <label for="cron">Job Notification Frequency</label>
-        <select id="cron" v-model="cronFreq" class="input-field">
-          <option value="hourly">Hourly</option>
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-        </select>
-        
+        <label for="phone">Mobile number (international format)</label>
+        <div class="flex gap-4">
+          <input id="phone" type="tel" v-model="phone" class="input-field" placeholder="+14155552671" :disabled="phoneVerified" />
+          <button type="button" class="btn btn-secondary" @click="requestCode" :disabled="phoneVerified || sendingCode">{{ sendingCode ? 'Sending…' : 'Send code' }}</button>
+        </div>
+        <small v-if="phoneVerified">Verified: {{ phone }}</small>
+        <div v-if="verificationSent && !phoneVerified" class="flex gap-4">
+          <input v-model="verificationCode" class="input-field" inputmode="numeric" autocomplete="one-time-code" placeholder="SMS verification code" />
+          <button type="button" class="btn btn-secondary" @click="confirmCode" :disabled="confirming">{{ confirming ? 'Checking…' : 'Verify number' }}</button>
+        </div>
+        <p v-if="notice" role="status">{{ notice }}</p>
+        <p v-if="errorMessage" role="alert" class="error-text">{{ errorMessage }}</p>
+
+        <p>Job boards are checked automatically every six hours. You can also run a check from the dashboard.</p>
+        <label class="flex items-center gap-2">
+          <input v-model="smsOptIn" type="checkbox" :disabled="!phoneVerified" />
+          I agree to receive SMS alerts for relevant job matches.
+        </label>
         <button type="submit" class="btn btn-primary">Save Preferences</button>
       </form>
     </div>
 
-    <!-- Resume Upload -->
     <div class="glass-card">
-      <h2>Resume Upload</h2>
-      <p style="color: var(--text-secondary); margin-bottom: 1rem;">Upload your Resume (PDF, DOC, or Image) for LLM analysis.</p>
+      <h2>Resume</h2>
+      <p>Upload a text-based resume for matching and role-focused resume drafts. Scanned images may need OCR.</p>
       <form @submit.prevent="uploadResume" class="flex items-center gap-4">
-        <input type="file" @change="handleFileUpload" class="input-field" style="margin-bottom: 0;" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" />
-        <button type="submit" class="btn btn-success" :disabled="!selectedFile">Upload</button>
+        <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.doc,.docx,.txt,.md" />
+        <button type="submit" class="btn btn-success" :disabled="!selectedFile || uploading">{{ uploading ? 'Uploading…' : 'Upload resume' }}</button>
       </form>
+      <p v-if="resumeMessage" role="status">{{ resumeMessage }}</p>
     </div>
 
-    <!-- Allowed Sources -->
     <div class="glass-card">
-      <h2>Allowed Job Sources</h2>
-      <p style="color: var(--text-secondary); margin-bottom: 1rem;">Add public career pages to scrape jobs from.</p>
-      
+      <h2>Company job boards</h2>
+      <p>Add the company's public Greenhouse, Lever, or Ashby job-board URL. A regular careers page cannot be reliably read as a live feed.</p>
       <form @submit.prevent="addSource" class="flex gap-4">
-        <input type="url" v-model="newSource" class="input-field" placeholder="https://careers.google.com" style="margin-bottom: 0;" required />
-        <button type="submit" class="btn btn-primary">Add Source</button>
+        <input type="url" v-model="newSource" class="input-field" placeholder="https://boards.greenhouse.io/company" required />
+        <button type="submit" class="btn btn-primary">Add job board</button>
       </form>
-      
-      <div class="mt-4">
-        <h4>Current Sources:</h4>
-        <ul style="list-style: none; margin-top: 1rem;" class="flex flex-col gap-4">
-          <li v-for="source in sources" :key="source.ID" style="background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 0.5rem; color: var(--text-secondary);">
-            {{ source.URL }}
-          </li>
-        </ul>
-      </div>
+      <p v-if="sourceError" role="alert" class="error-text">{{ sourceError }}</p>
+      <ul class="source-list">
+        <li v-for="source in sources" :key="source.ID">{{ source.Name }} · {{ source.URL }}</li>
+      </ul>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { apiUrl } from '../api';
-import { auth } from '../firebase';
+import { onMounted, ref } from 'vue';
+import { apiFetch } from '../api';
 
-const whatsapp = ref('');
-const cronFreq = ref('daily');
+const phone = ref('');
+const phoneVerified = ref(false);
+const smsOptIn = ref(false);
+const verificationCode = ref('');
+const verificationSent = ref(false);
+const sendingCode = ref(false);
+const confirming = ref(false);
+const uploading = ref(false);
 const selectedFile = ref<File | null>(null);
 const newSource = ref('');
 const sources = ref<any[]>([]);
+const notice = ref('');
+const errorMessage = ref('');
+const sourceError = ref('');
+const resumeMessage = ref('');
 
-const fetchSources = async () => {
-  try {
-    const res = await fetch(apiUrl('/api/sources'));
-    if (res.ok) {
-      sources.value = await res.json();
-    }
-  } catch (error) {
-    console.error("Failed to fetch sources", error);
+const loadProfileAndSources = async () => {
+  const [profileRes, sourcesRes] = await Promise.all([apiFetch('/api/users/profile'), apiFetch('/api/sources')]);
+  if (profileRes.ok) {
+    const user = await profileRes.json();
+    phone.value = user.whatsapp_number || '';
+    phoneVerified.value = !!user.phone_verified;
+    smsOptIn.value = !!user.sms_opt_in;
   }
+  if (sourcesRes.ok) sources.value = await sourcesRes.json();
+};
+
+const requestCode = async () => {
+  errorMessage.value = ''; notice.value = '';
+  sendingCode.value = true;
+  try {
+    const res = await apiFetch('/api/users/phone/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.value.trim() }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not send verification code.');
+    verificationSent.value = true;
+    notice.value = body.message || 'Check your phone for a verification code.';
+  } catch (e: any) { errorMessage.value = e.message; }
+  finally { sendingCode.value = false; }
+};
+
+const confirmCode = async () => {
+  errorMessage.value = ''; confirming.value = true;
+  try {
+    const res = await apiFetch('/api/users/phone/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.value.trim(), code: verificationCode.value.trim() }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Number verification failed.');
+    phoneVerified.value = true; notice.value = body.message || 'Mobile number verified.';
+  } catch (e: any) { errorMessage.value = e.message; }
+  finally { confirming.value = false; }
 };
 
 const saveSettings = async () => {
-  const firebaseUID = auth.currentUser?.uid;
-  if (!firebaseUID) {
-    alert('Please log in before saving preferences.');
-    return;
-  }
-
+  errorMessage.value = '';
   try {
-    const res = await fetch(apiUrl('/api/users/settings'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ firebase_uid: firebaseUID, cron_frequency: cronFreq.value, whatsapp_number: whatsapp.value })
-    });
-    if (!res.ok) throw new Error('Failed to save settings');
-    alert('Preferences saved successfully!');
-  } catch (error) {
-    alert('Failed to save preferences.');
-  }
+    const res = await apiFetch('/api/users/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sms_opt_in: smsOptIn.value }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Failed to save preferences.');
+    notice.value = 'Preferences saved.';
+  } catch (e: any) { errorMessage.value = e.message; }
 };
 
-const handleFileUpload = (event: Event) => {
-  const target = event.target as HTMLInputElement;
-  if (target.files && target.files.length > 0) {
-    selectedFile.value = target.files[0];
-  }
-};
-
+const handleFileUpload = (event: Event) => { selectedFile.value = (event.target as HTMLInputElement).files?.[0] || null; };
 const uploadResume = async () => {
   if (!selectedFile.value) return;
-  const firebaseUID = auth.currentUser?.uid;
-  if (!firebaseUID) {
-    alert('Please log in before uploading a resume.');
-    return;
-  }
-
-  const formData = new FormData();
-  formData.append('resume', selectedFile.value);
-  formData.append('firebase_uid', firebaseUID);
-
+  uploading.value = true; resumeMessage.value = '';
   try {
-    const res = await fetch(apiUrl('/api/users/resume'), {
-      method: 'POST',
-      body: formData
-    });
-    if (!res.ok) throw new Error('Failed to upload resume');
-    alert('Resume uploaded successfully!');
-  } catch (error) {
-    alert('Failed to upload resume.');
-  }
+    const data = new FormData(); data.append('resume', selectedFile.value);
+    const res = await apiFetch('/api/users/resume', { method: 'POST', body: data });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Resume upload failed.');
+    resumeMessage.value = body.warning || `Resume uploaded; extracted ${body.extracted_chars || 0} characters.`;
+  } catch (e: any) { resumeMessage.value = e.message; }
+  finally { uploading.value = false; }
 };
-
 const addSource = async () => {
+  sourceError.value = '';
   try {
-    const res = await fetch(apiUrl('/api/sources'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ URL: newSource.value, Name: "Custom Source" })
-    });
-    if (res.ok) {
-      newSource.value = '';
-      fetchSources();
-    }
-  } catch (error) {
-    alert('Failed to add source.');
-  }
+    const res = await apiFetch('/api/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: newSource.value, name: newSource.value }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not add job board.');
+    newSource.value = ''; await loadProfileAndSources();
+  } catch (e: any) { sourceError.value = e.message; }
 };
-
-onMounted(() => {
-  fetchSources();
-});
+onMounted(() => { loadProfileAndSources().catch((e: any) => { errorMessage.value = e.message; }); });
 </script>
 
 <style scoped>
-.settings-container {
-  grid-template-columns: 1fr;
-  max-width: 800px;
-  margin: 0 auto;
-}
+.settings-container { grid-template-columns: 1fr; max-width: 800px; margin: 0 auto; }
+.error-text { color: #ff8585; }
+.source-list { padding-top: 1rem; }
+.source-list li { margin: .5rem 0; overflow-wrap: anywhere; }
 </style>

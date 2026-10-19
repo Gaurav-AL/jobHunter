@@ -50,7 +50,7 @@ func initDB() {
 	}
 
 	// Auto Migrate
-	err = db.AutoMigrate(&repository.User{}, &repository.AllowedSource{}, &repository.Job{}, &repository.JobMatch{}, &repository.JobDraft{})
+	err = db.AutoMigrate(&repository.User{}, &repository.AllowedSource{}, &repository.Job{}, &repository.JobMatch{}, &repository.JobDraft{}, &repository.NotificationDelivery{})
 	if err != nil {
 		log.Fatalf("Failed to auto migrate: %v", err)
 	}

@@ -30,7 +30,7 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { auth } from '../firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { apiUrl } from '../api';
+import { apiFetch } from '../api';
 
 const router = useRouter();
 const email = ref('');
@@ -41,7 +41,7 @@ const handleLogin = async () => {
   try {
     if (isRegistering.value) {
       await createUserWithEmailAndPassword(auth, email.value, password.value);
-      const res = await fetch(apiUrl('/api/users/register'), {
+      const res = await apiFetch('/api/users/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.value, firebase_uid: auth.currentUser?.uid })

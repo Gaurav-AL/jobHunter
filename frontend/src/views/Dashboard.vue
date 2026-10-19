@@ -25,7 +25,7 @@
       <div class="glass-card stat-card">
         <span class="stat-label">Allowed sources</span>
         <strong>{{ sources.length }}</strong>
-        <small>{{ sources.length ? 'Career pages being tracked.' : 'Add company career pages to begin.' }}</small>
+        <small>{{ sources.length ? 'Published job boards being checked.' : 'Add public ATS job boards to begin.' }}</small>
       </div>
       <div class="glass-card stat-card">
         <span class="stat-label">Drafts</span>
@@ -62,16 +62,6 @@
           <label for="location">Location preference</label>
           <input id="location" v-model="profile.location" class="input-field" placeholder="Remote, Bengaluru, US timezone..." />
 
-          <label for="whatsapp">Mobile/WhatsApp notifications</label>
-          <input id="whatsapp" v-model="profile.whatsapp_number" class="input-field" placeholder="+91..." />
-
-          <label for="cron">Notification frequency</label>
-          <select id="cron" v-model="profile.cron_frequency" class="input-field">
-            <option value="hourly">Hourly</option>
-            <option value="daily">Daily</option>
-            <option value="weekly">Weekly</option>
-          </select>
-
           <button type="submit" class="btn btn-primary">Save Profile</button>
         </form>
 
@@ -87,10 +77,10 @@
           </form>
 
           <form @submit.prevent="discoverSources" class="upload-box">
-            <h4>Company crawler</h4>
-            <p>Search a company/domain and add a reachable career page to your allowed sources.</p>
+            <h4>Find a company job board</h4>
+            <p>Paste its public Greenhouse, Lever, or Ashby board URL. General career pages are not a reliable live source.</p>
             <div class="inline-form">
-              <input v-model="sourceQuery" class="input-field" placeholder="openai.com or OpenAI" />
+              <input v-model="sourceQuery" class="input-field" placeholder="https://jobs.lever.co/company" />
               <button type="submit" class="btn btn-primary" :disabled="discovering">Find</button>
             </div>
           </form>
@@ -101,6 +91,7 @@
               :key="candidate.url"
               @click="addSource(candidate.url, candidate.name)"
               class="source-candidate"
+              :disabled="!candidate.provider"
               type="button"
             >
               <span>
@@ -124,13 +115,13 @@
         </div>
 
         <form @submit.prevent="addManualSource" class="inline-form">
-          <input v-model="newSourceUrl" class="input-field" type="url" placeholder="https://company.com/careers" required />
+          <input v-model="newSourceUrl" class="input-field" type="url" placeholder="https://jobs.ashbyhq.com/company" required />
           <input v-model="newSourceName" class="input-field" placeholder="Company name" />
           <button type="submit" class="btn btn-primary">Add</button>
         </form>
 
         <div v-if="sources.length === 0" class="empty-state">
-          No sources yet. Add companies from Personalisation or paste a career URL above.
+          No sources yet. Add a public Greenhouse, Lever, or Ashby board URL above.
         </div>
         <ul v-else class="source-list">
           <li v-for="source in sources" :key="source.ID">
@@ -138,7 +129,7 @@
               <strong>{{ source.Name || source.URL }}</strong>
               <a :href="source.URL" target="_blank" rel="noreferrer">{{ source.URL }}</a>
             </span>
-            <em>{{ source.IsGlobal ? 'global' : 'personal' }}</em>
+            <em>{{ source.Provider || 'job board' }}</em>
           </li>
         </ul>
       </section>
@@ -181,8 +172,10 @@
               <h4>{{ job.JobTitle || `Job ID: ${job.JobID}` }}</h4>
               <span class="score-badge">{{ job.MatchScore }}%</span>
             </div>
-            <a v-if="job.JobURL" :href="job.JobURL" target="_blank" rel="noreferrer">{{ job.Company || job.JobURL }}</a>
+            <a v-if="job.ApplyURL || job.JobURL" :href="job.ApplyURL || job.JobURL" target="_blank" rel="noreferrer">Open official listing / application</a>
+            <p v-if="job.Location">{{ job.Location }}</p>
             <p>{{ job.MatchReason }}</p>
+            <small v-if="job.LastSeenAt">Confirmed on source board: {{ new Date(job.LastSeenAt).toLocaleString() }}</small>
           </div>
           <button
             v-if="job.SourceURL"
@@ -200,7 +193,7 @@
       <div class="section-header">
         <div>
           <h3>Your job drafts</h3>
-          <p>Review, apply, or reject generated opportunities from tracked sources.</p>
+          <p>Each draft includes a role-focused resume. Open the employer’s application page, review and upload the resume there, then record that you submitted it.</p>
         </div>
       </div>
 
@@ -215,12 +208,23 @@
               <h4>{{ draft.JobTitle || `Job ID: ${draft.JobID}` }}</h4>
               <span :class="['badge', draft.Status]">{{ draft.Status }}</span>
             </div>
-            <a v-if="draft.JobURL" :href="draft.JobURL" target="_blank" rel="noreferrer">{{ draft.Company || draft.JobURL }}</a>
-            <p class="draft-content">{{ draft.DraftContent }}</p>
+            <a v-if="draft.ApplyURL || draft.JobURL" :href="draft.ApplyURL || draft.JobURL" target="_blank" rel="noreferrer">Open official application page</a>
+            <p v-if="draft.Location">{{ draft.Location }}</p>
+            <small v-if="draft.LastSeenAt">Last confirmed listed: {{ new Date(draft.LastSeenAt).toLocaleString() }}</small>
+            <details class="draft-details">
+              <summary>Review tailored resume</summary>
+              <pre class="resume-preview">{{ draft.TailoredResume || 'Resume draft is not available. Upload a text-based resume and run discovery again.' }}</pre>
+              <button v-if="draft.TailoredResume" @click="downloadResume(draft)" type="button" class="btn btn-secondary">Download resume draft (.txt)</button>
+            </details>
+            <details class="draft-details">
+              <summary>Review application message</summary>
+              <p class="draft-content">{{ draft.DraftContent }}</p>
+            </details>
+            <p v-if="!draft.JobActive" class="closed-job">This listing is no longer confirmed active. Verify it on the employer site.</p>
           </div>
           <div class="actions" v-if="draft.Status === 'pending'">
-            <button @click="updateStatus(draft.ID, 'applied')" class="btn btn-success">Apply</button>
-            <button @click="updateStatus(draft.ID, 'rejected')" class="btn btn-danger">Reject</button>
+            <button @click="updateStatus(draft.ID, 'applied')" class="btn btn-success" :disabled="!draft.JobActive || !(draft.ApplyURL || draft.JobURL)">I submitted the application</button>
+            <button @click="updateStatus(draft.ID, 'rejected')" class="btn btn-danger">Dismiss</button>
           </div>
         </article>
       </div>
@@ -230,7 +234,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { apiUrl } from '../api';
+import { apiFetch } from '../api';
 import { auth, authReady } from '../firebase';
 
 const dashboard = ref<any>(null);
@@ -255,7 +259,6 @@ const profile = reactive({
   skills: '',
   location: '',
   cron_frequency: 'daily',
-  whatsapp_number: '',
 });
 
 const pendingDrafts = computed(() => drafts.value.filter(draft => draft.Status === 'pending').length);
@@ -273,7 +276,6 @@ const applyProfile = (user: any) => {
   profile.skills = user?.skills || '';
   profile.location = user?.location || '';
   profile.cron_frequency = user?.cron_frequency || 'daily';
-  profile.whatsapp_number = user?.whatsapp_number || '';
 };
 
 const refreshAll = async () => {
@@ -281,9 +283,9 @@ const refreshAll = async () => {
   try {
     const params = await firebaseParams();
     const [dashboardRes, draftsRes, sourcesRes] = await Promise.all([
-      fetch(apiUrl(`/api/dashboard?${params.toString()}`)),
-      fetch(apiUrl(`/api/drafts?${params.toString()}`)),
-      fetch(apiUrl(`/api/sources?${params.toString()}`)),
+      apiFetch(`/api/dashboard?${params.toString()}`),
+      apiFetch(`/api/drafts?${params.toString()}`),
+      apiFetch(`/api/sources?${params.toString()}`),
     ]);
     if (dashboardRes.ok) {
       dashboard.value = await dashboardRes.json();
@@ -302,7 +304,7 @@ const refreshAll = async () => {
 const saveProfile = async () => {
   const params = await firebaseParams();
   const firebaseUID = params.get('firebase_uid');
-  const res = await fetch(apiUrl('/api/users/profile'), {
+  const res = await apiFetch('/api/users/profile', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ firebase_uid: firebaseUID, ...profile }),
@@ -330,7 +332,7 @@ const uploadResume = async () => {
     formData.append('resume', selectedFile.value);
     formData.append('firebase_uid', params.get('firebase_uid') || '');
 
-    const res = await fetch(apiUrl('/api/users/resume'), { method: 'POST', body: formData });
+    const res = await apiFetch('/api/users/resume', { method: 'POST', body: formData });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || 'Resume upload failed.');
     resumeMessage.value = body.warning || `Extracted ${body.extracted_chars || 0} characters into your profile signal.`;
@@ -348,7 +350,7 @@ const discoverSources = async () => {
   try {
     const params = new URLSearchParams();
     if (sourceQuery.value) params.set('query', sourceQuery.value);
-    const res = await fetch(apiUrl(`/api/sources/discover?${params.toString()}`));
+    const res = await apiFetch(`/api/sources/discover?${params.toString()}`);
     if (res.ok) candidates.value = await res.json();
   } finally {
     discovering.value = false;
@@ -357,7 +359,7 @@ const discoverSources = async () => {
 
 const addSource = async (url: string, name: string) => {
   const params = await firebaseParams();
-  const res = await fetch(apiUrl('/api/sources'), {
+  const res = await apiFetch('/api/sources', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ firebase_uid: params.get('firebase_uid'), url, name }),
@@ -379,7 +381,7 @@ const addManualSource = async () => {
 const runHuntNow = async () => {
   runningHunt.value = true;
   try {
-    await fetch(apiUrl('/api/scheduler/run'), { method: 'POST' });
+    await apiFetch('/api/scheduler/run', { method: 'POST' });
     setTimeout(refreshAll, 2500);
   } finally {
     setTimeout(() => {
@@ -390,12 +392,22 @@ const runHuntNow = async () => {
 };
 
 const updateStatus = async (id: number, status: string) => {
-  const res = await fetch(apiUrl(`/api/drafts/${id}/status`), {
+  const res = await apiFetch(`/api/drafts/${id}/status`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   });
   if (res.ok) await refreshAll();
+};
+
+const downloadResume = (draft: any) => {
+  const blob = new Blob([draft.TailoredResume], { type: 'text/plain;charset=utf-8' });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = `resume-${String(draft.JobTitle || 'job').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.txt`;
+  anchor.click();
+  URL.revokeObjectURL(href);
 };
 
 onMounted(async () => {
@@ -610,4 +622,8 @@ button:disabled {
     flex-direction: column;
   }
 }
+.resume-preview { white-space: pre-wrap; max-height: 24rem; overflow: auto; padding: 1rem; background: rgba(0,0,0,.2); border-radius: .5rem; }
+.draft-details { margin-top: .75rem; }
+.draft-details summary { cursor: pointer; font-weight: 600; }
+.closed-job { color: #ffbf69; }
 </style>
