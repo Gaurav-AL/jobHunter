@@ -212,9 +212,16 @@ def diversify_by_company(candidates: list[tuple], limit: int) -> list[tuple]:
     return selected
 
 
-def parse_date(value: str | None) -> dt.datetime | None:
+def parse_date(value: str | int | float | None) -> dt.datetime | None:
     if not value:
         return None
+    if isinstance(value, (int, float)):
+        try:
+            # Some providers use Unix seconds; tolerate millisecond timestamps too.
+            timestamp = value / 1000 if abs(value) >= 1_000_000_000_000 else value
+            return dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     try:
         parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -224,10 +231,12 @@ def parse_date(value: str | None) -> dt.datetime | None:
         return None
 
 
-def parse_relative_date(value: str | None) -> dt.datetime | None:
+def parse_relative_date(value: str | int | float | None) -> dt.datetime | None:
     """Parse Google Jobs labels such as '3 days ago'; unknown dates stay unknown."""
     if not value:
         return None
+    if not isinstance(value, str):
+        return parse_date(value)
     text = value.strip().lower()
     match = re.search(r"(today|just posted|yesterday|\d+\s+(?:minute|hour|day|week|month)s?\s+ago)", text)
     if not match:
