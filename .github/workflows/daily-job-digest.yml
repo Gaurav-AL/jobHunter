@@ -25,10 +25,6 @@ jobs:
           python-version: '3.12'
       - name: Fetch recent resume-matched roles and email the digest
         env:
-          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
-          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
-          ADZUNA_COUNTRY: in
-          JOB_LOCATION: India
           JOB_EMAIL_TO: gauravchaudhary.hck@gmail.com
           SMTP_HOST: smtp.gmail.com
           SMTP_PORT: '587'

@@ -29,16 +29,7 @@ PROFILE = {
         "distributed systems", "canary deployment", "observability", "integration testing",
         "database connection pooling", "production support", "concurrency",
     ],
-    "location": os.getenv("JOB_LOCATION", "India"),
-    "country": os.getenv("ADZUNA_COUNTRY", "in").lower(),
 }
-QUERIES = [
-    "backend engineer java", "software engineer backend", "golang developer",
-    "python backend developer", "software development engineer",
-    "platform engineer kubernetes", "site reliability engineer", "distributed systems engineer",
-    "cloud engineer", "microservices engineer",
-]
-
 
 def get_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "JobHunter-DailyDigest/1.0"})
@@ -47,54 +38,64 @@ def get_json(url: str) -> dict:
 
 
 def search_jobs() -> list[dict]:
-    app_id, app_key = os.getenv("ADZUNA_APP_ID", "").strip(), os.getenv("ADZUNA_APP_KEY", "").strip()
-    if not app_id or not app_key:
-        raise RuntimeError("Configure ADZUNA_APP_ID and ADZUNA_APP_KEY GitHub Actions secrets (Adzuna requires both).")
-    if not PROFILE["country"].isalpha() or len(PROFILE["country"]) != 2:
-        raise RuntimeError("ADZUNA_COUNTRY must be a two-letter Adzuna country code.")
-
+    # Jobicy's public feed needs no account, API key, or paid tier. The unfiltered
+    # feed gives broad remote coverage; APAC adds region-eligible opportunities.
     found: dict[str, dict] = {}
-    for query in QUERIES:
-        params = urllib.parse.urlencode({
-            "app_id": app_id, "app_key": app_key, "results_per_page": 50,
-            "what": query, "where": PROFILE["location"], "sort_by": "date",
-            "content-type": "application/json",
-        })
-        url = f"https://api.adzuna.com/v1/api/jobs/{PROFILE['country']}/search/1?{params}"
+    for geo in (None, "apac"):
+        params = {"count": 200}
+        if geo:
+            params["geo"] = geo
+        url = "https://jobicy.com/api/v2/remote-jobs?" + urllib.parse.urlencode(params)
         try:
-            results = get_json(url).get("results", [])
+            payload = get_json(url)
         except urllib.error.HTTPError as exc:
             message = exc.read(1024).decode("utf-8", "replace")
-            raise RuntimeError(f"Adzuna request failed (HTTP {exc.code}): {message}") from exc
-        for job in results:
-            key = str(job.get("id") or job.get("redirect_url") or "")
+            raise RuntimeError(f"Jobicy public jobs feed failed (HTTP {exc.code}): {message}") from exc
+        if payload.get("success") is False:
+            raise RuntimeError(f"Jobicy public jobs feed reported an error: {payload.get('error', 'unknown error')}")
+        for job in payload.get("jobs", []):
+            key = str(job.get("id") or job.get("url") or "")
             if key:
                 found[key] = job
-        time.sleep(0.2)
+        time.sleep(0.25)
 
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
     candidates = []
-    for job in found.values():
-        created = parse_date(job.get("created"))
+    for raw in found.values():
+        created = parse_date(raw.get("pubDate"))
         if created is None or created < cutoff:
             continue
-        title = str(job.get("title", ""))
-        description = str(job.get("description", ""))
-        company_obj = job.get("company") or {}
+        title = str(raw.get("jobTitle", ""))
+        description = str(raw.get("jobDescription", "")) + " " + str(raw.get("jobExcerpt", ""))
         text = f"{title} {description}".lower()
         if not any(term in title.lower() for term in ("engineer", "developer", "sre", "programmer")):
             continue
-        # Exclude clear senior/lead/management postings; preserve plausible associate/mid-level roles.
-        if any(term in title.lower() for term in ("staff", "principal", "director", "engineering manager", "head of", "vice president", "vp ")):
+        # Focus on roles aligned with roughly three years' experience.
+        if any(term in title.lower() for term in ("senior", "staff", "principal", "director", "engineering manager", "head of", "vice president", "vp ", "lead engineer")):
             continue
         skill_matches = [skill for skill in PROFILE["skills"] if re.search(r"(?<![a-z0-9])" + re.escape(skill) + r"(?![a-z0-9])", text)]
-        if len(skill_matches) < 1:
+        if not skill_matches:
             continue
         title_lower = title.lower()
         role_matches = sum(role in title_lower for role in PROFILE["roles"])
-        level_fit = 2 if any(term in title_lower for term in ("associate", "junior", "entry level", "mid-level", "sde i", "sde 1", "engineer ii")) else 0
+        level = str(raw.get("jobLevel", "")).lower()
+        level_fit = 2 if any(term in title_lower or term in level for term in ("associate", "junior", "entry", "mid", "intermediate")) else 0
         age_days = max(0, (dt.datetime.now(dt.timezone.utc) - created).days)
-        freshness = max(0, 2 - age_days // 15)
+        freshness = max(0, 2 - age_days // 4)
+        job = {
+            "id": raw.get("id"),
+            "title": title,
+            "company": raw.get("companyName") or "Unknown company",
+            "description": description,
+            "location": raw.get("jobGeo") or "Remote",
+            "url": raw.get("url", ""),
+            "created": created,
+            "salary_min": raw.get("salaryMin"),
+            "salary_max": raw.get("salaryMax"),
+            "salary_currency": raw.get("salaryCurrency", ""),
+            "salary_period": raw.get("salaryPeriod", ""),
+            "source": "Jobicy",
+        }
         score = len(skill_matches) + 2 * role_matches + level_fit + freshness
         candidates.append((score, created, job, skill_matches))
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
@@ -105,7 +106,7 @@ def diversify_by_company(candidates: list[tuple], limit: int) -> list[tuple]:
     """Preserve fit ranking while spreading the digest across distinct employers."""
     groups: dict[str, list[tuple]] = {}
     for item in candidates:
-        employer = (item[2].get("company") or {}).get("display_name", "Unknown company")
+        employer = item[2].get("company", "Unknown company")
         key = " ".join(employer.casefold().split())
         groups.setdefault(key, []).append(item)
     # Prioritize employers whose best listing is the strongest match, then take one
@@ -141,25 +142,27 @@ def parse_date(value: str | None) -> dt.datetime | None:
 
 def format_job(item: tuple) -> dict:
     score, created, job, skills = item
-    location = (job.get("location") or {}).get("display_name", PROFILE["location"])
     return {
-        "title": job.get("title", "Software role"),
-        "company": (job.get("company") or {}).get("display_name", "Unknown company"),
-        "location": location,
+        "title": job["title"],
+        "company": job["company"],
+        "location": job["location"],
         "created": created.strftime("%Y-%m-%d"),
-        "url": job.get("redirect_url", ""),
+        "url": job["url"],
         "skills": skills[:8],
         "salary": salary_text(job),
+        "source": job["source"],
         "score": score,
     }
 
 
 def salary_text(job: dict) -> str:
     low, high = job.get("salary_min"), job.get("salary_max")
+    currency = job.get("salary_currency", "")
+    period = job.get("salary_period", "")
     if low and high:
-        return f"{low:,.0f} - {high:,.0f} (as listed)"
+        return f"{low:,.0f} - {high:,.0f} {currency} {period}".strip()
     if low:
-        return f"From {low:,.0f} (as listed)"
+        return f"From {low:,.0f} {currency} {period}".strip()
     return "Not listed"
 
 
@@ -185,19 +188,19 @@ def send_email(jobs: list[dict]) -> None:
 
 
 def plain_body(jobs: list[dict], today: str) -> str:
-    lines = [f"Your JobHunter matches for {today}", "", f"Found {len(jobs)} current matches from the last 30 days.", ""]
+    lines = [f"Your JobHunter matches for {today}", "", f"Found {len(jobs)} current matches from the last seven days.", ""]
     for i, job in enumerate(jobs, 1):
-        lines.extend([f"{i}. {job['title']} — {job['company']}", f"   {job['location']} | posted {job['created']} | salary: {job['salary']}", f"   Resume fit: {', '.join(job['skills'])}", f"   Apply: {job['url']}", ""])
-    lines.append("Matches are ranked by resume-skill fit, role level, and freshness, with results spread across distinct employers where possible. Review each listing and tailor your application before submitting. JobHunter does not submit applications for you.")
+        lines.extend([f"{i}. {job['title']} — {job['company']}", f"   {job['location']} | posted {job['created']} | salary: {job['salary']}", f"   Resume fit: {', '.join(job['skills'])}", f"   Source: {job['source']}", f"   Listing: {job['url']}", ""])
+    lines.append("No employers are preferred or excluded. Matches are ranked by resume fit, role level, and freshness, then spread across employers where possible. This free public feed covers remote listings published in the last seven days. Review each Jobicy listing before applying. JobHunter does not submit applications for you.")
     return "\n".join(lines)
 
 
 def html_body(jobs: list[dict], today: str) -> str:
     cards = []
     for i, job in enumerate(jobs, 1):
-        cards.append(f"<li><h3>{i}. {html.escape(job['title'])} — {html.escape(job['company'])}</h3><p>{html.escape(job['location'])} · Posted {html.escape(job['created'])} · Salary: {html.escape(job['salary'])}</p><p>Resume fit: {html.escape(', '.join(job['skills']))}</p><p><a href=\"{html.escape(job['url'], quote=True)}\">Open official listing</a></p></li>")
-    note = "Employers are not preferred or excluded. The list is ranked by resume-skill fit and freshness, then spread across employers where enough distinct companies have matching listings."
-    return f"<html><body><h1>JobHunter matches — {html.escape(today)}</h1><p>{len(jobs)} recent roles matching your resume preferences.</p><p>{html.escape(note)}</p><ol>{''.join(cards)}</ol><p>Listings are from Adzuna’s job ad search and may redirect to a company or job-board page. Confirm that the employer is still accepting applications. JobHunter does not submit applications.</p></body></html>"
+        cards.append(f"<li><h3>{i}. {html.escape(job['title'])} — {html.escape(job['company'])}</h3><p>{html.escape(job['location'])} · Posted {html.escape(job['created'])} · Salary: {html.escape(job['salary'])}</p><p>Resume fit: {html.escape(', '.join(job['skills']))}</p><p>Source: {html.escape(job['source'])}</p><p><a href=\"{html.escape(job['url'], quote=True)}\">Open listing on Jobicy</a></p></li>")
+    note = "No employers are preferred or excluded. Roles are ranked by resume fit, role level, and freshness, then spread across employers where possible. The free public Jobicy feed covers remote roles and only exposes jobs from its current seven-day window."
+    return f"<html><body><h1>JobHunter matches — {html.escape(today)}</h1><p>{len(jobs)} recent roles matching your resume preferences.</p><p>{html.escape(note)}</p><ol>{''.join(cards)}</ol><p>Jobicy is the source of these listings. Open the listing there and confirm that the employer is still accepting applications. JobHunter does not submit applications.</p></body></html>"
 
 
 def main() -> int:
