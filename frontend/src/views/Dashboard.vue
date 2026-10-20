@@ -62,6 +62,27 @@
           <label for="location">Location preference</label>
           <input id="location" v-model="profile.location" class="input-field" placeholder="Remote, Bengaluru, US timezone..." />
 
+          <h4>Stored applicant details</h4>
+          <p>Check extracted values and fill any blanks. These details are saved for reuse.</p>
+          <div class="applicant-fields">
+            <label>Application email<input :value="profile.email" class="input-field" readonly autocomplete="email" /></label>
+            <label>First name<input v-model="profile.applicant_first_name" class="input-field" autocomplete="given-name" /></label>
+            <label>Last name<input v-model="profile.applicant_last_name" class="input-field" autocomplete="family-name" /></label>
+            <label>Application phone<input v-model="profile.applicant_phone" class="input-field" autocomplete="tel" /></label>
+            <label>Country<input v-model="profile.applicant_country" class="input-field" autocomplete="country-name" /></label>
+            <label>City<input v-model="profile.applicant_city" class="input-field" autocomplete="address-level2" /></label>
+            <label>State / region<input v-model="profile.applicant_region" class="input-field" autocomplete="address-level1" /></label>
+            <label>Postal code<input v-model="profile.applicant_postal_code" class="input-field" autocomplete="postal-code" /></label>
+            <label>Street address<input v-model="profile.applicant_address" class="input-field" autocomplete="street-address" /></label>
+            <label>LinkedIn URL<input v-model="profile.applicant_linkedin" class="input-field" autocomplete="url" /></label>
+            <label>Website / portfolio<input v-model="profile.applicant_website" class="input-field" autocomplete="url" /></label>
+            <label>GitHub URL<input v-model="profile.applicant_github" class="input-field" autocomplete="url" /></label>
+            <label>Work authorization<input v-model="profile.work_authorization" class="input-field" placeholder="Enter your own answer" /></label>
+            <label>Visa sponsorship<input v-model="profile.visa_sponsorship" class="input-field" placeholder="Enter your own answer" /></label>
+            <label>Notice period<input v-model="profile.notice_period" class="input-field" /></label>
+            <label>Salary expectation<input v-model="profile.salary_expectation" class="input-field" /></label>
+          </div>
+
           <button type="submit" class="btn btn-primary">Save Profile</button>
         </form>
 
@@ -78,12 +99,21 @@
 
           <form @submit.prevent="discoverSources" class="upload-box">
             <h4>Find a company job board</h4>
-            <p>Paste its public Greenhouse, Lever, or Ashby board URL. General career pages are not a reliable live source.</p>
+          <p>Paste a public Greenhouse, Lever, or Ashby board URL. General career pages are not a reliable live source.</p>
             <div class="inline-form">
               <input v-model="sourceQuery" class="input-field" placeholder="https://jobs.lever.co/company" />
               <button type="submit" class="btn btn-primary" :disabled="discovering">Find</button>
             </div>
           </form>
+
+          <div class="upload-box">
+            <h4>Public job feeds</h4>
+          <p>Himalayas filters to India; Jobicy adds APAC remote roles. Your profile location boosts India-based jobs in matching.</p>
+            <div class="inline-form">
+              <button type="button" class="btn btn-secondary" @click="addSource('https://himalayas.app/jobs/api/search?country=IN&q=software%20engineer', 'Himalayas · India')">Add Himalayas India feed</button>
+              <button type="button" class="btn btn-secondary" @click="addSource('https://jobicy.com/api/v2/remote-jobs?geo=apac&count=200', 'Jobicy · APAC remote')">Add Jobicy APAC remote feed</button>
+            </div>
+          </div>
 
           <div class="candidate-list">
             <button
@@ -173,6 +203,7 @@
               <span class="score-badge">{{ job.MatchScore }}%</span>
             </div>
             <a v-if="job.ApplyURL || job.JobURL" :href="job.ApplyURL || job.JobURL" target="_blank" rel="noreferrer">Open official listing / application</a>
+            <p v-if="job.Company"><strong>{{ job.Company }}</strong><span v-if="job.SourceName"> · via {{ job.SourceName }}</span></p>
             <p v-if="job.Location">{{ job.Location }}</p>
             <p>{{ job.MatchReason }}</p>
             <small v-if="job.LastSeenAt">Confirmed on source board: {{ new Date(job.LastSeenAt).toLocaleString() }}</small>
@@ -209,6 +240,7 @@
               <span :class="['badge', draft.Status]">{{ draft.Status }}</span>
             </div>
             <a v-if="draft.ApplyURL || draft.JobURL" :href="draft.ApplyURL || draft.JobURL" target="_blank" rel="noreferrer">Open official application page</a>
+            <p v-if="draft.Company"><strong>{{ draft.Company }}</strong><span v-if="draft.SourceName"> · via {{ draft.SourceName }}</span></p>
             <p v-if="draft.Location">{{ draft.Location }}</p>
             <small v-if="draft.LastSeenAt">Last confirmed listed: {{ new Date(draft.LastSeenAt).toLocaleString() }}</small>
             <details class="draft-details">
@@ -254,11 +286,27 @@ const newSourceUrl = ref('');
 const newSourceName = ref('');
 
 const profile = reactive({
+  email: '',
   profile_summary: '',
   target_roles: '',
   skills: '',
   location: '',
   cron_frequency: 'daily',
+  applicant_first_name: '',
+  applicant_last_name: '',
+  applicant_phone: '',
+  applicant_address: '',
+  applicant_city: '',
+  applicant_region: '',
+  applicant_postal_code: '',
+  applicant_country: '',
+  applicant_linkedin: '',
+  applicant_website: '',
+  applicant_github: '',
+  work_authorization: '',
+  visa_sponsorship: '',
+  notice_period: '',
+  salary_expectation: '',
 });
 
 const pendingDrafts = computed(() => drafts.value.filter(draft => draft.Status === 'pending').length);
@@ -271,11 +319,27 @@ const firebaseParams = async () => {
 };
 
 const applyProfile = (user: any) => {
+  profile.email = user?.email || '';
   profile.profile_summary = user?.profile_summary || '';
   profile.target_roles = user?.target_roles || '';
   profile.skills = user?.skills || '';
   profile.location = user?.location || '';
   profile.cron_frequency = user?.cron_frequency || 'daily';
+  profile.applicant_first_name = user?.applicant_first_name || '';
+  profile.applicant_last_name = user?.applicant_last_name || '';
+  profile.applicant_phone = user?.applicant_phone || '';
+  profile.applicant_address = user?.applicant_address || '';
+  profile.applicant_city = user?.applicant_city || '';
+  profile.applicant_region = user?.applicant_region || '';
+  profile.applicant_postal_code = user?.applicant_postal_code || '';
+  profile.applicant_country = user?.applicant_country || '';
+  profile.applicant_linkedin = user?.applicant_linkedin || '';
+  profile.applicant_website = user?.applicant_website || '';
+  profile.applicant_github = user?.applicant_github || '';
+  profile.work_authorization = user?.work_authorization || '';
+  profile.visa_sponsorship = user?.visa_sponsorship || '';
+  profile.notice_period = user?.notice_period || '';
+  profile.salary_expectation = user?.salary_expectation || '';
 };
 
 const refreshAll = async () => {
@@ -336,6 +400,7 @@ const uploadResume = async () => {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || 'Resume upload failed.');
     resumeMessage.value = body.warning || `Extracted ${body.extracted_chars || 0} characters into your profile signal.`;
+    if (body.applicant_profile) applyProfile(body.applicant_profile);
     if (body.profile_summary) profile.profile_summary = body.profile_summary;
     await refreshAll();
   } catch (error: any) {
@@ -626,4 +691,7 @@ button:disabled {
 .draft-details { margin-top: .75rem; }
 .draft-details summary { cursor: pointer; font-weight: 600; }
 .closed-job { color: #ffbf69; }
+.applicant-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.applicant-fields label { display: grid; gap: .35rem; }
+@media (max-width: 700px) { .applicant-fields { grid-template-columns: 1fr; } }
 </style>

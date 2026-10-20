@@ -3,6 +3,7 @@ package scheduler
 import (
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +65,9 @@ func RunScrapingCycle(db *gorm.DB) {
 		seenURLs := make([]string, 0, len(jobs))
 		for _, job := range jobs {
 			job.SourceID = source.ID
+			if strings.TrimSpace(job.Company) == "" {
+				job.Company = source.Name
+			}
 			seenURLs = append(seenURLs, job.URL)
 			var existing repository.Job
 			err := db.Where("url = ?", job.URL).First(&existing).Error
@@ -78,7 +82,7 @@ func RunScrapingCycle(db *gorm.DB) {
 				continue
 			} else {
 				jobID := existing.ID
-				if err = db.Model(&existing).Updates(map[string]any{"source_id": source.ID, "external_id": job.ExternalID, "title": job.Title, "description": job.Description, "apply_url": job.ApplyURL, "location": job.Location, "published_at": job.PublishedAt, "last_seen_at": job.LastSeenAt, "scraped_at": job.ScrapedAt, "is_active": true}).Error; err != nil {
+				if err = db.Model(&existing).Updates(map[string]any{"source_id": source.ID, "external_id": job.ExternalID, "company": job.Company, "title": job.Title, "description": job.Description, "apply_url": job.ApplyURL, "location": job.Location, "published_at": job.PublishedAt, "last_seen_at": job.LastSeenAt, "scraped_at": job.ScrapedAt, "is_active": true}).Error; err != nil {
 					log.Printf("Failed to refresh job %s: %v", job.URL, err)
 					continue
 				}

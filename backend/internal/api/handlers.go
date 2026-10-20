@@ -166,6 +166,18 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 		"resume_url":  filePath,
 		"resume_text": resumeText,
 	}
+	// Extract only unambiguous contact links and an India-format phone locally;
+	// do not add a separate model request or overwrite reviewed values here.
+	if resumeText != "" {
+		var existing repository.User
+		if err := db.First(&existing, userID).Error; err == nil {
+			for column, value := range extractApplicantDetailsLocal(resumeText) {
+				if strings.TrimSpace(value) != "" && applicantFieldEmpty(existing, column) {
+					updates[column] = value
+				}
+			}
+		}
+	}
 	if profileSummary != "" {
 		updates["profile_summary"] = profileSummary
 	}
@@ -175,12 +187,15 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 		return
 	}
 
+	var updatedUser repository.User
+	_ = db.First(&updatedUser, userID).Error
 	c.JSON(http.StatusOK, gin.H{
-		"message":         "Resume uploaded successfully",
-		"path":            filePath,
-		"extracted_chars": len(resumeText),
-		"profile_summary": profileSummary,
-		"warning":         extractionWarning,
+		"message":           "Resume uploaded successfully",
+		"path":              filePath,
+		"extracted_chars":   len(resumeText),
+		"profile_summary":   profileSummary,
+		"applicant_profile": profileResponse(updatedUser),
+		"warning":           extractionWarning,
 	})
 }
 
@@ -367,6 +382,7 @@ type DraftView struct {
 	ApplyURL       string    `json:"ApplyURL"`
 	Location       string    `json:"Location"`
 	Company        string    `json:"Company"`
+	SourceName     string    `json:"SourceName"`
 	JobActive      bool      `json:"JobActive"`
 	LastSeenAt     time.Time `json:"LastSeenAt"`
 }
@@ -382,6 +398,7 @@ type MatchedJobView struct {
 	LastSeenAt  time.Time  `json:"LastSeenAt"`
 	JobActive   bool       `json:"JobActive"`
 	Company     string     `json:"Company"`
+	SourceName  string     `json:"SourceName"`
 	SourceURL   string     `json:"SourceURL"`
 	MatchScore  int        `json:"MatchScore"`
 	MatchReason string     `json:"MatchReason"`
@@ -409,6 +426,10 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
+		company := job.Company
+		if company == "" {
+			company = source.Name
+		}
 		views = append(views, DraftView{
 			ID:             draft.ID,
 			JobID:          draft.JobID,
@@ -419,7 +440,8 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 			JobURL:         job.URL,
 			ApplyURL:       job.ApplyURL,
 			Location:       job.Location,
-			Company:        source.Name,
+			Company:        company,
+			SourceName:     source.Name,
 			JobActive:      job.IsActive,
 			LastSeenAt:     job.LastSeenAt,
 		})
@@ -451,6 +473,10 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
+		company := job.Company
+		if company == "" {
+			company = source.Name
+		}
 		views = append(views, MatchedJobView{
 			ID:          match.ID,
 			JobID:       match.JobID,
@@ -461,7 +487,8 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 			PublishedAt: job.PublishedAt,
 			LastSeenAt:  job.LastSeenAt,
 			JobActive:   job.IsActive,
-			Company:     source.Name,
+			Company:     company,
+			SourceName:  source.Name,
 			SourceURL:   source.URL,
 			MatchScore:  match.MatchScore,
 			MatchReason: match.MatchReason,
@@ -549,13 +576,28 @@ func GetProfile(c *gin.Context, db *gorm.DB) {
 
 func UpdateProfile(c *gin.Context, db *gorm.DB) {
 	var req struct {
-		UserID         uint   `json:"user_id"`
-		FirebaseUID    string `json:"firebase_uid"`
-		ProfileSummary string `json:"profile_summary"`
-		TargetRoles    string `json:"target_roles"`
-		Skills         string `json:"skills"`
-		Location       string `json:"location"`
-		CronFrequency  string `json:"cron_frequency"`
+		UserID              uint   `json:"user_id"`
+		FirebaseUID         string `json:"firebase_uid"`
+		ProfileSummary      string `json:"profile_summary"`
+		TargetRoles         string `json:"target_roles"`
+		Skills              string `json:"skills"`
+		Location            string `json:"location"`
+		CronFrequency       string `json:"cron_frequency"`
+		ApplicantFirstName  string `json:"applicant_first_name"`
+		ApplicantLastName   string `json:"applicant_last_name"`
+		ApplicantPhone      string `json:"applicant_phone"`
+		ApplicantAddress    string `json:"applicant_address"`
+		ApplicantCity       string `json:"applicant_city"`
+		ApplicantRegion     string `json:"applicant_region"`
+		ApplicantPostalCode string `json:"applicant_postal_code"`
+		ApplicantCountry    string `json:"applicant_country"`
+		ApplicantLinkedIn   string `json:"applicant_linkedin"`
+		ApplicantWebsite    string `json:"applicant_website"`
+		ApplicantGitHub     string `json:"applicant_github"`
+		WorkAuthorization   string `json:"work_authorization"`
+		VisaSponsorship     string `json:"visa_sponsorship"`
+		NoticePeriod        string `json:"notice_period"`
+		SalaryExpectation   string `json:"salary_expectation"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -566,12 +608,29 @@ func UpdateProfile(c *gin.Context, db *gorm.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	updates := repository.User{
-		ProfileSummary: req.ProfileSummary,
-		TargetRoles:    req.TargetRoles,
-		Skills:         req.Skills,
-		Location:       req.Location,
-		CronFrequency:  req.CronFrequency,
+	updates := map[string]any{
+		"profile_summary":       req.ProfileSummary,
+		"target_roles":          req.TargetRoles,
+		"skills":                req.Skills,
+		"location":              req.Location,
+		"applicant_first_name":  req.ApplicantFirstName,
+		"applicant_last_name":   req.ApplicantLastName,
+		"applicant_phone":       req.ApplicantPhone,
+		"applicant_address":     req.ApplicantAddress,
+		"applicant_city":        req.ApplicantCity,
+		"applicant_region":      req.ApplicantRegion,
+		"applicant_postal_code": req.ApplicantPostalCode,
+		"applicant_country":     req.ApplicantCountry,
+		"applicant_linkedin":    req.ApplicantLinkedIn,
+		"applicant_website":     req.ApplicantWebsite,
+		"applicant_github":      req.ApplicantGitHub,
+		"work_authorization":    req.WorkAuthorization,
+		"visa_sponsorship":      req.VisaSponsorship,
+		"notice_period":         req.NoticePeriod,
+		"salary_expectation":    req.SalaryExpectation,
+	}
+	if req.CronFrequency != "" {
+		updates["cron_frequency"] = req.CronFrequency
 	}
 	if err := db.Model(&repository.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
@@ -609,6 +668,10 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
+		company := job.Company
+		if company == "" {
+			company = source.Name
+		}
 		matchedJobs = append(matchedJobs, MatchedJobView{
 			ID:          match.ID,
 			JobID:       match.JobID,
@@ -619,7 +682,8 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 			PublishedAt: job.PublishedAt,
 			LastSeenAt:  job.LastSeenAt,
 			JobActive:   job.IsActive,
-			Company:     source.Name,
+			Company:     company,
+			SourceName:  source.Name,
 			SourceURL:   source.URL,
 			MatchScore:  match.MatchScore,
 			MatchReason: match.MatchReason,
@@ -654,19 +718,58 @@ func DiscoverSources(c *gin.Context, db *gorm.DB) {
 
 func profileResponse(user repository.User) gin.H {
 	return gin.H{
-		"id":              user.ID,
-		"email":           user.Email,
-		"resume_url":      user.ResumeURL,
-		"resume_text":     user.ResumeText,
-		"profile_summary": user.ProfileSummary,
-		"target_roles":    user.TargetRoles,
-		"skills":          user.Skills,
-		"location":        user.Location,
-		"cron_frequency":  user.CronFrequency,
-		"whatsapp_number": user.WhatsAppNumber,
-		"phone_verified":  user.PhoneVerified,
-		"sms_opt_in":      user.SMSOptIn,
+		"id":                    user.ID,
+		"email":                 user.Email,
+		"resume_url":            user.ResumeURL,
+		"resume_text":           user.ResumeText,
+		"profile_summary":       user.ProfileSummary,
+		"target_roles":          user.TargetRoles,
+		"skills":                user.Skills,
+		"location":              user.Location,
+		"applicant_first_name":  user.ApplicantFirstName,
+		"applicant_last_name":   user.ApplicantLastName,
+		"applicant_phone":       user.ApplicantPhone,
+		"applicant_address":     user.ApplicantAddress,
+		"applicant_city":        user.ApplicantCity,
+		"applicant_region":      user.ApplicantRegion,
+		"applicant_postal_code": user.ApplicantPostalCode,
+		"applicant_country":     user.ApplicantCountry,
+		"applicant_linkedin":    user.ApplicantLinkedIn,
+		"applicant_website":     user.ApplicantWebsite,
+		"applicant_github":      user.ApplicantGitHub,
+		"work_authorization":    user.WorkAuthorization,
+		"visa_sponsorship":      user.VisaSponsorship,
+		"notice_period":         user.NoticePeriod,
+		"salary_expectation":    user.SalaryExpectation,
+		"cron_frequency":        user.CronFrequency,
+		"whatsapp_number":       user.WhatsAppNumber,
+		"phone_verified":        user.PhoneVerified,
+		"sms_opt_in":            user.SMSOptIn,
 	}
+}
+
+func extractApplicantDetailsLocal(text string) map[string]string {
+	result := map[string]string{}
+	patterns := map[string]string{
+		"applicant_phone":    `(?i)(?:\+91[\s().-]*)?[6-9][0-9](?:[\s().-]*[0-9]){8}`,
+		"applicant_linkedin": `(?i)https?://(?:www\.)?linkedin\.com/in/[a-z0-9_%-]+/?`,
+		"applicant_github":   `(?i)https?://(?:www\.)?github\.com/[a-z0-9-]+/?`,
+	}
+	for field, pattern := range patterns {
+		if match := regexp.MustCompile(pattern).FindString(text); match != "" {
+			result[field] = strings.TrimSpace(match)
+		}
+	}
+	return result
+}
+
+func applicantFieldEmpty(user repository.User, column string) bool {
+	values := map[string]string{
+		"applicant_phone":    user.ApplicantPhone,
+		"applicant_linkedin": user.ApplicantLinkedIn,
+		"applicant_github":   user.ApplicantGitHub,
+	}
+	return strings.TrimSpace(values[column]) == ""
 }
 
 func extractResumeText(filePath, ext string) (string, string) {

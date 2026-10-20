@@ -46,6 +46,23 @@ func MatchJobToProfile(user repository.User, job repository.Job) MatchResult {
 			hits = append(hits, token)
 		}
 	}
+	// Treat India as a preference, not a hard filter: include remote listings and
+	// reduce explicit non-India matches while preserving other strong-fit roles.
+	if prefersIndia(user.Location) {
+		location := strings.ToLower(job.Location)
+		switch {
+		case strings.Contains(location, "india"):
+			score += 18
+		case containsAny(location, "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "chennai", "delhi", "noida", "gurugram", "gurgaon", "kolkata", "ahmedabad", "kochi", "coimbatore", "jaipur", "indore"):
+			score += 16
+		case location == "":
+			// Missing location is unknown, so it receives no preference bonus.
+		case strings.Contains(location, "remote") || strings.Contains(location, "anywhere"):
+			score += 5
+		default:
+			score -= 8
+		}
+	}
 
 	titleBoost := 0
 	titleTokens := weightedTokens(job.Title)
@@ -79,6 +96,21 @@ func MatchJobToProfile(user repository.User, job repository.Job) MatchResult {
 	}
 
 	return MatchResult{Score: score, Reason: reason}
+}
+
+func prefersIndia(location string) bool {
+	value := strings.ToLower(location)
+	return strings.TrimSpace(value) == "" || strings.Contains(value, "india") || strings.Contains(value, "bharat") ||
+		containsAny(value, "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "chennai", "delhi", "noida", "gurugram", "gurgaon", "kolkata", "ahmedabad", "kochi", "coimbatore", "jaipur", "indore")
+}
+
+func containsAny(value string, options ...string) bool {
+	for _, option := range options {
+		if strings.Contains(value, option) {
+			return true
+		}
+	}
+	return false
 }
 
 func weightedTokens(value string) map[string]int {

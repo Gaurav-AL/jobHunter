@@ -38,7 +38,7 @@
 
     <div class="glass-card">
       <h2>Company job boards</h2>
-      <p>Add the company's public Greenhouse, Lever, or Ashby job-board URL. A regular careers page cannot be reliably read as a live feed.</p>
+      <p>Add a public Greenhouse, Lever, or Ashby job-board URL, or use a Himalayas / Jobicy API feed URL. India-based matches receive a location preference boost.</p>
       <form @submit.prevent="addSource" class="flex gap-4">
         <input type="url" v-model="newSource" class="input-field" placeholder="https://boards.greenhouse.io/company" required />
         <button type="submit" class="btn btn-primary">Add job board</button>

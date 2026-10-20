@@ -8,22 +8,37 @@ import (
 
 // User represents the system user
 type User struct {
-	ID             uint   `gorm:"primaryKey"`
-	Email          string `gorm:"size:255;uniqueIndex;not null"`
-	FirebaseUID    string `gorm:"size:255;uniqueIndex;not null"`
-	ResumeURL      string `gorm:"size:512"`                // URL to stored resume (e.g., local path or cloud storage)
-	ResumeText     string `gorm:"type:longtext"`           // Extracted resume text used for matching and drafting
-	ProfileSummary string `gorm:"type:text"`               // AI/user edited professional summary
-	TargetRoles    string `gorm:"type:text"`               // Comma/newline separated target roles
-	Skills         string `gorm:"type:text"`               // Comma/newline separated skills
-	Location       string `gorm:"size:255"`                // Preferred location or remote preference
-	CronFrequency  string `gorm:"size:32;default:'daily'"` // e.g., 'hourly', 'daily', 'weekly'
-	WhatsAppNumber string `gorm:"size:32"`                 // Reused field for verified SMS recipient
-	PhoneVerified  bool   `gorm:"not null;default:false"`
-	SMSOptIn       bool   `gorm:"not null;default:false"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	DeletedAt      gorm.DeletedAt `gorm:"index"`
+	ID                  uint   `gorm:"primaryKey"`
+	Email               string `gorm:"size:255;uniqueIndex;not null"`
+	FirebaseUID         string `gorm:"size:255;uniqueIndex;not null"`
+	ResumeURL           string `gorm:"size:512"`      // URL to stored resume (e.g., local path or cloud storage)
+	ResumeText          string `gorm:"type:longtext"` // Extracted resume text used for matching and drafting
+	ProfileSummary      string `gorm:"type:text"`     // AI/user edited professional summary
+	TargetRoles         string `gorm:"type:text"`     // Comma/newline separated target roles
+	Skills              string `gorm:"type:text"`     // Comma/newline separated skills
+	Location            string `gorm:"size:255"`      // Preferred location or remote preference
+	ApplicantFirstName  string `gorm:"size:120"`
+	ApplicantLastName   string `gorm:"size:120"`
+	ApplicantPhone      string `gorm:"size:32"`
+	ApplicantAddress    string `gorm:"size:512"`
+	ApplicantCity       string `gorm:"size:120"`
+	ApplicantRegion     string `gorm:"size:120"`
+	ApplicantPostalCode string `gorm:"size:32"`
+	ApplicantCountry    string `gorm:"size:120"`
+	ApplicantLinkedIn   string `gorm:"column:applicant_linkedin;size:512"`
+	ApplicantWebsite    string `gorm:"size:512"`
+	ApplicantGitHub     string `gorm:"column:applicant_github;size:512"`
+	WorkAuthorization   string `gorm:"size:255"`
+	VisaSponsorship     string `gorm:"size:255"`
+	NoticePeriod        string `gorm:"size:120"`
+	SalaryExpectation   string `gorm:"size:120"`
+	CronFrequency       string `gorm:"size:32;default:'daily'"` // e.g., 'hourly', 'daily', 'weekly'
+	WhatsAppNumber      string `gorm:"size:32"`                 // Reused field for verified SMS recipient
+	PhoneVerified       bool   `gorm:"not null;default:false"`
+	SMSOptIn            bool   `gorm:"not null;default:false"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	DeletedAt           gorm.DeletedAt `gorm:"index"`
 }
 
 // AllowedSource represents a career page to scrape
@@ -55,6 +70,7 @@ type NotificationDelivery struct {
 type Job struct {
 	ID          uint   `gorm:"primaryKey"`
 	SourceID    uint   `gorm:"not null"`
+	Company     string `gorm:"size:255"`
 	Title       string `gorm:"size:255;not null"`
 	Description string `gorm:"type:text"`
 	URL         string `gorm:"size:512;uniqueIndex;not null"`

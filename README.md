@@ -29,9 +29,13 @@ The compose stack starts MySQL, the Go API, and the Vue frontend. Nginx serves t
 
 ## Live job discovery and applications
 
-JobHunter reads public listings from company Greenhouse, Lever, and Ashby boards through their published-job APIs. Add a direct company board URL such as `https://boards.greenhouse.io/company`, `https://jobs.lever.co/company`, or `https://jobs.ashbyhq.com/company`. A regular careers page does not have a universal jobs API; unsupported pages are rejected instead of being scraped or turned into fake jobs. Public feeds only cover companies whose board URL you add. A broader cross-company index requires a licensed aggregator API and its own credentials.
+JobHunter reads published listings from company Greenhouse, Lever, and Ashby boards through their public job APIs. Add a direct company board URL such as `https://boards.greenhouse.io/company`, `https://jobs.lever.co/company`, or `https://jobs.ashbyhq.com/company`. Add the built-in Himalayas feed for country-filtered India remote jobs and Jobicy for APAC remote jobs. Public ATS APIs require a company board URL; they do not expose a global index of every employer. The profile location is used as a ranking preference, with India and common Indian city locations receiving a boost.
 
 Listings are refreshed every six hours and can also be checked with **Run Hunt Now**. The dashboard shows when a listing was last seen on the board and hides jobs after a successful refresh no longer returns them. Each match has a tailored plain-text resume draft and application message. Review/download the resume, open the employer's official application form, submit it there, then use **I submitted the application** to record your action. JobHunter does not claim submission to arbitrary employer systems: ATS application endpoints require employer-issued credentials or each employer's configured form fields.
+
+### Stored applicant details
+
+Resume text is saved during upload and reused by matching and draft generation. The app locally recognizes a likely India-format phone number and LinkedIn/GitHub profile URLs once during upload; it does not infer legal name, street address, work authorization, visa answers, notice period, or salary. Review or enter these fields in **Personalisation → Stored applicant details**, then save the profile. Applicant data is stored in the MySQL user record and is not committed to this repository. The current app prepares those values for reuse; it does not inject them into or submit external employer forms.
 
 ### SMS notifications
 
@@ -44,6 +48,7 @@ API routes require a Firebase ID token; the backend verifies its signature and p
 ### Known boundaries
 
 - Resume tailoring currently produces a reviewable plain-text draft. It may need formatting in a document editor before upload; always verify it against the original resume.
+- External application forms differ by employer. The ATS job-listing APIs do not provide one shared form-fill endpoint; Greenhouse submission requires employer-side API credentials, and Lever application forms have posting-specific fields. Open the official application page and review each answer.
 - JobHunter tracks that you clicked the manual confirmation button; it cannot independently verify a completed employer application.
 - A public listing being present in an ATS response is evidence it is listed there at refresh time, not a guarantee the employer is still accepting submissions.
 - SMS provider acceptance is not the same as confirmed handset delivery. Twilio's message status can remain queued or fail due to carrier/provider rules.
