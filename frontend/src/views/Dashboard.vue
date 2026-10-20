@@ -77,6 +77,7 @@
             <label>LinkedIn URL<input v-model="profile.applicant_linkedin" class="input-field" autocomplete="url" /></label>
             <label>Website / portfolio<input v-model="profile.applicant_website" class="input-field" autocomplete="url" /></label>
             <label>GitHub URL<input v-model="profile.applicant_github" class="input-field" autocomplete="url" /></label>
+            <label class="projects-field">Project highlights<textarea v-model="profile.applicant_projects" class="input-field textarea" placeholder="Add projects you want considered in relevant application answers."></textarea><small>JobHunter is prefilled after resume upload. Drafts include it only when relevant or when the application asks for project experience.</small></label>
             <label>Work authorization<input v-model="profile.work_authorization" class="input-field" placeholder="Enter your own answer" /></label>
             <label>Visa sponsorship<input v-model="profile.visa_sponsorship" class="input-field" placeholder="Enter your own answer" /></label>
             <label>Notice period<input v-model="profile.notice_period" class="input-field" /></label>
@@ -89,7 +90,7 @@
         <div class="form-stack">
           <form @submit.prevent="uploadResume" class="upload-box">
             <h4>Resume</h4>
-            <p>Upload `.pdf`, `.txt`, `.md`, or `.docx` for extraction. Scanned image resumes still need OCR.</p>
+            <p>Upload `.pdf`, `.txt`, `.md`, or `.docx` for extraction. Resume text is sent to the configured AICC/Gemini provider to extract profile fields. Scanned image resumes still need OCR.</p>
             <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg" />
             <button type="submit" class="btn btn-success" :disabled="!selectedFile || uploadingResume">
               {{ uploadingResume ? 'Uploading...' : 'Upload Resume' }}
@@ -303,6 +304,7 @@ const profile = reactive({
   applicant_linkedin: '',
   applicant_website: '',
   applicant_github: '',
+  applicant_projects: '',
   work_authorization: '',
   visa_sponsorship: '',
   notice_period: '',
@@ -336,6 +338,7 @@ const applyProfile = (user: any) => {
   profile.applicant_linkedin = user?.applicant_linkedin || '';
   profile.applicant_website = user?.applicant_website || '';
   profile.applicant_github = user?.applicant_github || '';
+  profile.applicant_projects = user?.applicant_projects || '';
   profile.work_authorization = user?.work_authorization || '';
   profile.visa_sponsorship = user?.visa_sponsorship || '';
   profile.notice_period = user?.notice_period || '';
@@ -693,5 +696,6 @@ button:disabled {
 .closed-job { color: #ffbf69; }
 .applicant-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
 .applicant-fields label { display: grid; gap: .35rem; }
+.applicant-fields .projects-field { grid-column: 1 / -1; }
 @media (max-width: 700px) { .applicant-fields { grid-template-columns: 1fr; } }
 </style>

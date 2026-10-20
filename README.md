@@ -35,7 +35,7 @@ Listings are refreshed every six hours and can also be checked with **Run Hunt N
 
 ### Stored applicant details
 
-Resume text is saved during upload and reused by matching and draft generation. The app locally recognizes a likely India-format phone number and LinkedIn/GitHub profile URLs once during upload; it does not infer legal name, street address, work authorization, visa answers, notice period, or salary. Review or enter these fields in **Personalisation → Stored applicant details**, then save the profile. Applicant data is stored in the MySQL user record and is not committed to this repository. The current app prepares those values for reuse; it does not inject them into or submit external employer forms.
+Resume text is saved during upload and sent to the configured AICC/Gemini provider for structured profile extraction. Extracted fields fill only blank profile values; edit or correct them in **Personalisation → Stored applicant details**. Work authorization, visa sponsorship, notice period, and salary are never inferred and must be entered by you. Resume text and extracted details remain in your MySQL user record. The project highlights field is prefilled with this JobHunter project and included in generated drafts only when relevant to the role or when project experience is requested. Verify every generated answer before applying. The current app prepares applicant values for reuse; it does not inject them into or submit external employer forms.
 
 ### SMS notifications
 

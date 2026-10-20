@@ -23,6 +23,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const jobHunterProjectHighlight = "JobHunter — personal project: Go/Gin backend and Vue.js frontend with Docker Compose and MySQL; Firebase-authenticated user accounts; public Greenhouse, Lever, Ashby, Himalayas, and Jobicy job discovery; resume-based job matching and role-tailored resume/application drafts; scheduled email/SMS notifications. Review project details and metrics before using in an application."
+
 func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	api := r.Group("/api")
 	api.Use(FirebaseAuth())
@@ -154,11 +156,13 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 
 	resumeText, extractionWarning := extractResumeText(filePath, ext)
 	profileSummary := ""
+	var aiApplicantProfile services.ApplicantExtraction
 	if resumeText != "" {
-		if generatedProfile, err := services.GenerateProfileSummary(resumeText); err == nil {
-			profileSummary = generatedProfile
+		if generatedProfile, err := services.ExtractApplicantProfile(resumeText); err == nil {
+			aiApplicantProfile = generatedProfile
+			profileSummary = generatedProfile.ProfileSummary
 		} else {
-			extractionWarning = strings.TrimSpace(extractionWarning + " AICC profile extraction skipped: " + err.Error())
+			extractionWarning = strings.TrimSpace(extractionWarning + " AI applicant extraction unavailable: " + err.Error())
 		}
 	}
 
@@ -166,20 +170,40 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 		"resume_url":  filePath,
 		"resume_text": resumeText,
 	}
-	// Extract only unambiguous contact links and an India-format phone locally;
-	// do not add a separate model request or overwrite reviewed values here.
+	// Structured extraction is sent to the user-configured AICC/Gemini provider.
+	// Only blank fields are filled so reviewed profile values remain authoritative.
 	if resumeText != "" {
 		var existing repository.User
 		if err := db.First(&existing, userID).Error; err == nil {
+			applicantValues := applicantExtractionValues(aiApplicantProfile)
 			for column, value := range extractApplicantDetailsLocal(resumeText) {
+				if applicantValues[column] == "" {
+					applicantValues[column] = value
+				}
+			}
+			for column, value := range applicantValues {
 				if strings.TrimSpace(value) != "" && applicantFieldEmpty(existing, column) {
 					updates[column] = value
 				}
 			}
+			if strings.TrimSpace(existing.ProfileSummary) != "" {
+				delete(updates, "profile_summary")
+			} else if aiApplicantProfile.ProfileSummary != "" {
+				updates["profile_summary"] = aiApplicantProfile.ProfileSummary
+			}
+			if strings.TrimSpace(existing.TargetRoles) == "" && aiApplicantProfile.TargetRoles != "" {
+				updates["target_roles"] = aiApplicantProfile.TargetRoles
+			}
+			if strings.TrimSpace(existing.Skills) == "" && aiApplicantProfile.Skills != "" {
+				updates["skills"] = aiApplicantProfile.Skills
+			}
+			if strings.TrimSpace(existing.Location) == "" && aiApplicantProfile.Location != "" {
+				updates["location"] = aiApplicantProfile.Location
+			}
+			if strings.TrimSpace(existing.ApplicantProjects) == "" {
+				updates["applicant_projects"] = jobHunterProjectHighlight
+			}
 		}
-	}
-	if profileSummary != "" {
-		updates["profile_summary"] = profileSummary
 	}
 
 	if err := db.Model(&repository.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
@@ -594,6 +618,7 @@ func UpdateProfile(c *gin.Context, db *gorm.DB) {
 		ApplicantLinkedIn   string `json:"applicant_linkedin"`
 		ApplicantWebsite    string `json:"applicant_website"`
 		ApplicantGitHub     string `json:"applicant_github"`
+		ApplicantProjects   string `json:"applicant_projects"`
 		WorkAuthorization   string `json:"work_authorization"`
 		VisaSponsorship     string `json:"visa_sponsorship"`
 		NoticePeriod        string `json:"notice_period"`
@@ -624,6 +649,7 @@ func UpdateProfile(c *gin.Context, db *gorm.DB) {
 		"applicant_linkedin":    req.ApplicantLinkedIn,
 		"applicant_website":     req.ApplicantWebsite,
 		"applicant_github":      req.ApplicantGitHub,
+		"applicant_projects":    req.ApplicantProjects,
 		"work_authorization":    req.WorkAuthorization,
 		"visa_sponsorship":      req.VisaSponsorship,
 		"notice_period":         req.NoticePeriod,
@@ -649,6 +675,10 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 	}
 	var user repository.User
 	db.First(&user, userID)
+	if strings.TrimSpace(user.ApplicantProjects) == "" {
+		user.ApplicantProjects = jobHunterProjectHighlight
+		db.Model(&repository.User{}).Where("id = ?", userID).Update("applicant_projects", user.ApplicantProjects)
+	}
 	var sources []repository.AllowedSource
 	db.Where("is_global = ? OR user_id = ?", true, userID).Order("created_at DESC").Find(&sources)
 	var drafts []repository.JobDraft
@@ -737,6 +767,7 @@ func profileResponse(user repository.User) gin.H {
 		"applicant_linkedin":    user.ApplicantLinkedIn,
 		"applicant_website":     user.ApplicantWebsite,
 		"applicant_github":      user.ApplicantGitHub,
+		"applicant_projects":    user.ApplicantProjects,
 		"work_authorization":    user.WorkAuthorization,
 		"visa_sponsorship":      user.VisaSponsorship,
 		"notice_period":         user.NoticePeriod,
@@ -763,11 +794,36 @@ func extractApplicantDetailsLocal(text string) map[string]string {
 	return result
 }
 
+func applicantExtractionValues(extracted services.ApplicantExtraction) map[string]string {
+	values := map[string]string{
+		"applicant_first_name":  extracted.ApplicantFirstName,
+		"applicant_last_name":   extracted.ApplicantLastName,
+		"applicant_phone":       extracted.ApplicantPhone,
+		"applicant_address":     extracted.ApplicantAddress,
+		"applicant_city":        extracted.ApplicantCity,
+		"applicant_region":      extracted.ApplicantRegion,
+		"applicant_postal_code": extracted.ApplicantPostalCode,
+		"applicant_country":     extracted.ApplicantCountry,
+		"applicant_linkedin":    extracted.ApplicantLinkedIn,
+		"applicant_website":     extracted.ApplicantWebsite,
+		"applicant_github":      extracted.ApplicantGitHub,
+	}
+	return values
+}
+
 func applicantFieldEmpty(user repository.User, column string) bool {
 	values := map[string]string{
-		"applicant_phone":    user.ApplicantPhone,
-		"applicant_linkedin": user.ApplicantLinkedIn,
-		"applicant_github":   user.ApplicantGitHub,
+		"applicant_first_name":  user.ApplicantFirstName,
+		"applicant_last_name":   user.ApplicantLastName,
+		"applicant_phone":       user.ApplicantPhone,
+		"applicant_address":     user.ApplicantAddress,
+		"applicant_city":        user.ApplicantCity,
+		"applicant_region":      user.ApplicantRegion,
+		"applicant_postal_code": user.ApplicantPostalCode,
+		"applicant_country":     user.ApplicantCountry,
+		"applicant_linkedin":    user.ApplicantLinkedIn,
+		"applicant_website":     user.ApplicantWebsite,
+		"applicant_github":      user.ApplicantGitHub,
 	}
 	return strings.TrimSpace(values[column]) == ""
 }

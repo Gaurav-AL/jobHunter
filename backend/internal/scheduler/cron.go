@@ -168,6 +168,9 @@ func buildProfileText(user repository.User) string {
 	if user.Location != "" {
 		text += "\nLocation Preference: " + user.Location
 	}
+	if user.ApplicantProjects != "" {
+		text += "\nCandidate's verified project highlights (use only when directly relevant to this job or when project experience is requested; do not force into unrelated applications):\n" + user.ApplicantProjects
+	}
 	return text
 }
 

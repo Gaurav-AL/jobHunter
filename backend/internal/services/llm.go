@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,27 @@ import (
 	"backend/internal/repository"
 	"google.golang.org/genai"
 )
+
+// ApplicantExtraction contains factual resume fields. The prompt asks the model
+// to leave unknown values empty; callers merge only into fields the user has not
+// already reviewed.
+type ApplicantExtraction struct {
+	ProfileSummary      string `json:"profile_summary"`
+	TargetRoles         string `json:"target_roles"`
+	Skills              string `json:"skills"`
+	Location            string `json:"location"`
+	ApplicantFirstName  string `json:"applicant_first_name"`
+	ApplicantLastName   string `json:"applicant_last_name"`
+	ApplicantPhone      string `json:"applicant_phone"`
+	ApplicantAddress    string `json:"applicant_address"`
+	ApplicantCity       string `json:"applicant_city"`
+	ApplicantRegion     string `json:"applicant_region"`
+	ApplicantPostalCode string `json:"applicant_postal_code"`
+	ApplicantCountry    string `json:"applicant_country"`
+	ApplicantLinkedIn   string `json:"applicant_linkedin"`
+	ApplicantWebsite    string `json:"applicant_website"`
+	ApplicantGitHub     string `json:"applicant_github"`
+}
 
 func generateWithAICC(prompt string) (string, error) {
 	apiKey := os.Getenv("AICC_KEY")
@@ -40,7 +62,7 @@ func generateWithAICC(prompt string) (string, error) {
 func GenerateDraft(resumeText, jobDescription string) (string, error) {
 	prompt := fmt.Sprintf(`You are an expert career coach. Based on the provided resume/profile and job description, draft a highly compelling and personalized cover letter or application message.
 	
-Resume/Profile:
+Resume/Profile (include a project only if it is directly relevant to this job or the application asks for project experience; do not force unrelated projects into the response):
 %s
 
 Job Description:
@@ -67,6 +89,31 @@ Resume:
 	return generateWithAICC(prompt)
 }
 
+// ExtractApplicantProfile sends resume text to the configured Gemini provider
+// and returns only fields supported by the resume. Unknown/legal eligibility
+// answers must remain blank for the user to supply.
+func ExtractApplicantProfile(resumeText string) (ApplicantExtraction, error) {
+	prompt := fmt.Sprintf(`Extract applicant information from this resume. Return only a JSON object with exactly these string keys: profile_summary, target_roles, skills, location, applicant_first_name, applicant_last_name, applicant_phone, applicant_address, applicant_city, applicant_region, applicant_postal_code, applicant_country, applicant_linkedin, applicant_website, applicant_github.
+
+Use only information explicitly present in the resume. For unknown fields return an empty string. Do not infer work authorization, visa sponsorship, notice period, salary, or any other legal/personal answer. Keep skills as a comma-separated string. Do not include markdown fences.
+
+Resume text:
+%s`, resumeText)
+	response, err := generateWithAICC(prompt)
+	if err != nil {
+		return ApplicantExtraction{}, err
+	}
+	response = strings.TrimSpace(response)
+	response = strings.TrimPrefix(response, "```json")
+	response = strings.TrimPrefix(response, "```")
+	response = strings.TrimSuffix(strings.TrimSpace(response), "```")
+	var extracted ApplicantExtraction
+	if err := json.Unmarshal([]byte(strings.TrimSpace(response)), &extracted); err != nil {
+		return ApplicantExtraction{}, fmt.Errorf("could not parse applicant profile response: %w", err)
+	}
+	return extracted, nil
+}
+
 // GenerateTailoredResume produces a role-focused, ATS-readable resume draft.
 // The prompt forbids inventing qualifications, dates, employers, and metrics.
 func GenerateTailoredResume(resumeText, jobTitle, jobDescription string) (string, error) {
@@ -78,7 +125,7 @@ Target job title:
 Target job description:
 %s
 
-Source resume and profile:
+Source resume and profile (include a project only if it is directly relevant to this job or the application asks for project experience; do not force unrelated projects into the resume):
 %s
 `, jobTitle, jobDescription, resumeText)
 	return generateWithAICC(prompt)

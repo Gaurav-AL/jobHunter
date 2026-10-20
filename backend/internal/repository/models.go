@@ -28,6 +28,7 @@ type User struct {
 	ApplicantLinkedIn   string `gorm:"column:applicant_linkedin;size:512"`
 	ApplicantWebsite    string `gorm:"size:512"`
 	ApplicantGitHub     string `gorm:"column:applicant_github;size:512"`
+	ApplicantProjects   string `gorm:"type:longtext"`
 	WorkAuthorization   string `gorm:"size:255"`
 	VisaSponsorship     string `gorm:"size:255"`
 	NoticePeriod        string `gorm:"size:120"`
