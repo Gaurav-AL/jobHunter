@@ -23,7 +23,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const jobHunterProjectHighlight = "JobHunter — personal project: Go/Gin backend and Vue.js frontend with Docker Compose and MySQL; Firebase-authenticated user accounts; public Greenhouse, Lever, Ashby, Himalayas, and Jobicy job discovery; resume-based job matching and role-tailored resume/application drafts; scheduled email/SMS notifications. Review project details and metrics before using in an application."
+const jobHunterProjectHighlight = "JobHunter — personal project: Go/Gin backend and Vue.js frontend with Docker Compose and MySQL; Firebase-authenticated user accounts; public Greenhouse, Lever, Ashby, Himalayas, and Jobicy job discovery; resume-based job matching and scheduled email/SMS notifications. Review project details and metrics before using in an application."
 
 func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	api := r.Group("/api")
@@ -406,6 +406,7 @@ type DraftView struct {
 	ApplyURL       string    `json:"ApplyURL"`
 	Location       string    `json:"Location"`
 	Company        string    `json:"Company"`
+	Provider       string    `json:"Provider"`
 	SourceName     string    `json:"SourceName"`
 	JobActive      bool      `json:"JobActive"`
 	LastSeenAt     time.Time `json:"LastSeenAt"`
@@ -422,6 +423,7 @@ type MatchedJobView struct {
 	LastSeenAt  time.Time  `json:"LastSeenAt"`
 	JobActive   bool       `json:"JobActive"`
 	Company     string     `json:"Company"`
+	Provider    string     `json:"Provider"`
 	SourceName  string     `json:"SourceName"`
 	SourceURL   string     `json:"SourceURL"`
 	MatchScore  int        `json:"MatchScore"`
@@ -450,10 +452,6 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
-		company := job.Company
-		if company == "" {
-			company = source.Name
-		}
 		views = append(views, DraftView{
 			ID:             draft.ID,
 			JobID:          draft.JobID,
@@ -464,7 +462,8 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 			JobURL:         job.URL,
 			ApplyURL:       job.ApplyURL,
 			Location:       job.Location,
-			Company:        company,
+			Company:        job.Company,
+			Provider:       job.Provider,
 			SourceName:     source.Name,
 			JobActive:      job.IsActive,
 			LastSeenAt:     job.LastSeenAt,
@@ -497,10 +496,6 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
-		company := job.Company
-		if company == "" {
-			company = source.Name
-		}
 		views = append(views, MatchedJobView{
 			ID:          match.ID,
 			JobID:       match.JobID,
@@ -511,7 +506,8 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 			PublishedAt: job.PublishedAt,
 			LastSeenAt:  job.LastSeenAt,
 			JobActive:   job.IsActive,
-			Company:     company,
+			Company:     job.Company,
+			Provider:    job.Provider,
 			SourceName:  source.Name,
 			SourceURL:   source.URL,
 			MatchScore:  match.MatchScore,
@@ -717,10 +713,6 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
-		company := job.Company
-		if company == "" {
-			company = source.Name
-		}
 		matchedJobs = append(matchedJobs, MatchedJobView{
 			ID:          match.ID,
 			JobID:       match.JobID,
@@ -731,7 +723,8 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 			PublishedAt: job.PublishedAt,
 			LastSeenAt:  job.LastSeenAt,
 			JobActive:   job.IsActive,
-			Company:     company,
+			Company:     job.Company,
+			Provider:    job.Provider,
 			SourceName:  source.Name,
 			SourceURL:   source.URL,
 			MatchScore:  match.MatchScore,

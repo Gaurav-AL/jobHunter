@@ -28,14 +28,14 @@
         <small>{{ sources.length ? 'Published job boards being checked.' : 'Add public ATS job boards to begin.' }}</small>
       </div>
       <div class="glass-card stat-card">
-        <span class="stat-label">Drafts</span>
+        <span class="stat-label">Legacy drafts</span>
         <strong>{{ drafts.length }}</strong>
-        <small>{{ pendingDrafts }} pending review, {{ matchedJobs.length }} matched jobs.</small>
+        <small>{{ pendingDrafts }} from earlier runs; new runs do not create drafts.</small>
       </div>
       <div class="glass-card stat-card">
         <span class="stat-label">AICC</span>
         <strong>{{ dashboard?.integrations?.aicc_key ? 'Configured' : 'Missing key' }}</strong>
-        <small>Used for resume profiling and draft generation.</small>
+        <small>Used for resume profile extraction.</small>
       </div>
     </div>
 
@@ -189,7 +189,7 @@
       <div class="section-header">
         <div>
           <h3>Filtered matched jobs</h3>
-          <p>Jobs kept after resume/profile matching. Drafts are generated from this filtered set.</p>
+          <p>Greenhouse ranks first, followed by Lever and Ashby; aggregator feeds rank lower. Open a listing to apply directly. JobHunter does not submit applications or invent missing answers.</p>
         </div>
       </div>
 
@@ -205,7 +205,8 @@
               <span class="score-badge">{{ job.MatchScore }}%</span>
             </div>
             <a v-if="job.ApplyURL || job.JobURL" :href="job.ApplyURL || job.JobURL" target="_blank" rel="noreferrer">Open official listing / application</a>
-            <p v-if="job.Company"><strong>{{ job.Company }}</strong><span v-if="job.SourceName"> · via {{ job.SourceName }}</span></p>
+            <p v-if="job.Company"><strong>{{ job.Company }}</strong></p>
+            <small v-if="job.Provider || job.SourceName">Source: {{ job.Provider || job.SourceName }}</small>
             <p v-if="job.Location">{{ job.Location }}</p>
             <p>{{ job.MatchReason }}</p>
             <small v-if="job.LastSeenAt">Confirmed on source board: {{ new Date(job.LastSeenAt).toLocaleString() }}</small>
@@ -226,12 +227,12 @@
       <div class="section-header">
         <div>
           <h3>Your job drafts</h3>
-          <p>Each draft includes a role-focused resume. Open the employer’s application page, review and upload the resume there, then record that you submitted it.</p>
+          <p>Legacy drafts from earlier runs remain available. New runs no longer create drafts; matched job cards link directly to the employer’s application page.</p>
         </div>
       </div>
 
       <div v-if="drafts.length === 0" class="empty-state">
-        No drafts yet. Add sources and click Run Hunt Now to fetch openings.
+        No legacy drafts. Use the matched job cards above to open the employer’s application page.
       </div>
 
       <div class="draft-grid">
@@ -243,6 +244,7 @@
             </div>
             <a v-if="draft.ApplyURL || draft.JobURL" :href="draft.ApplyURL || draft.JobURL" target="_blank" rel="noreferrer">Open official application page</a>
             <p v-if="draft.Company"><strong>{{ draft.Company }}</strong><span v-if="draft.SourceName"> · via {{ draft.SourceName }}</span></p>
+            <small v-if="draft.Provider">Source: {{ draft.Provider }}</small>
             <p v-if="draft.Location">{{ draft.Location }}</p>
             <small v-if="draft.LastSeenAt">Last confirmed listed: {{ new Date(draft.LastSeenAt).toLocaleString() }}</small>
             <details class="draft-details">

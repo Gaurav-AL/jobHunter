@@ -54,7 +54,7 @@ func SendJobSMS(phone, company, title, jobURL string) (string, string, error) {
 	if !TwilioSMSConfigured() {
 		return "not_configured", "", fmt.Errorf("SMS provider is not configured")
 	}
-	message := fmt.Sprintf("JobHunter match: %s — %s. Review the listing and your resume draft: %s", company, title, jobURL)
+	message := fmt.Sprintf("JobHunter match: %s — %s. Open the employer listing to apply: %s", company, title, jobURL)
 	form := url.Values{"To": {phone}, "Body": {message}}
 	if serviceSID := os.Getenv("TWILIO_MESSAGING_SERVICE_SID"); serviceSID != "" {
 		form.Set("MessagingServiceSid", serviceSID)

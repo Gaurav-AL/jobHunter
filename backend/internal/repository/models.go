@@ -72,6 +72,7 @@ type NotificationDelivery struct {
 type Job struct {
 	ID          uint   `gorm:"primaryKey"`
 	SourceID    uint   `gorm:"not null"`
+	Provider    string `gorm:"size:32;index"`
 	Company     string `gorm:"size:255"`
 	Title       string `gorm:"size:255;not null"`
 	Description string `gorm:"type:text"`

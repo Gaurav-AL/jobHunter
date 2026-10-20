@@ -46,6 +46,18 @@ func MatchJobToProfile(user repository.User, job repository.Job) MatchResult {
 			hits = append(hits, token)
 		}
 	}
+	// Prefer direct ATS boards as requested. Aggregator jobs remain eligible,
+	// but rank below Greenhouse and the other direct company ATS sources.
+	switch strings.ToLower(job.Provider) {
+	case "greenhouse":
+		score += 20
+	case "lever", "ashby":
+		score += 10
+	case "himalayas":
+		score -= 15
+	case "jobicy":
+		score -= 10
+	}
 	// Treat India as a preference, not a hard filter: include remote listings and
 	// reduce explicit non-India matches while preserving other strong-fit roles.
 	if prefersIndia(user.Location) {

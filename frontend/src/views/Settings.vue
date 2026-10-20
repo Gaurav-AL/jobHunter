@@ -28,7 +28,7 @@
 
     <div class="glass-card">
       <h2>Resume</h2>
-      <p>Upload a text-based resume for matching and role-focused resume drafts. Scanned images may need OCR.</p>
+      <p>Upload a text-based resume for applicant profile extraction and job matching. New runs link to the employer application form and do not create drafts.</p>
       <form @submit.prevent="uploadResume" class="flex items-center gap-4">
         <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.doc,.docx,.txt,.md" />
         <button type="submit" class="btn btn-success" :disabled="!selectedFile || uploading">{{ uploading ? 'Uploading…' : 'Upload resume' }}</button>

@@ -3,7 +3,6 @@ package scheduler
 import (
 	"log"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -49,9 +48,9 @@ func RunScrapingCycle(db *gorm.DB) {
 	status.LastRunAt = time.Now()
 	status.LastRunMessage = "Checking published job boards..."
 	statusMu.Unlock()
-	discoveredJobs, matchedJobs, createdDrafts := 0, 0, 0
+	discoveredJobs, matchedJobs := 0, 0
 	var sources []repository.AllowedSource
-	if err := db.Find(&sources).Error; err != nil {
+	if err := db.Order("CASE WHEN provider = 'greenhouse' THEN 0 WHEN provider IN ('lever', 'ashby') THEN 1 WHEN provider IN ('himalayas', 'jobicy') THEN 2 ELSE 3 END").Find(&sources).Error; err != nil {
 		log.Printf("Error fetching sources: %v", err)
 		updateStatus("Failed to fetch sources.")
 		return
@@ -65,9 +64,7 @@ func RunScrapingCycle(db *gorm.DB) {
 		seenURLs := make([]string, 0, len(jobs))
 		for _, job := range jobs {
 			job.SourceID = source.ID
-			if strings.TrimSpace(job.Company) == "" {
-				job.Company = source.Name
-			}
+			job.Provider = source.Provider
 			seenURLs = append(seenURLs, job.URL)
 			var existing repository.Job
 			err := db.Where("url = ?", job.URL).First(&existing).Error
@@ -82,7 +79,7 @@ func RunScrapingCycle(db *gorm.DB) {
 				continue
 			} else {
 				jobID := existing.ID
-				if err = db.Model(&existing).Updates(map[string]any{"source_id": source.ID, "external_id": job.ExternalID, "company": job.Company, "title": job.Title, "description": job.Description, "apply_url": job.ApplyURL, "location": job.Location, "published_at": job.PublishedAt, "last_seen_at": job.LastSeenAt, "scraped_at": job.ScrapedAt, "is_active": true}).Error; err != nil {
+				if err = db.Model(&existing).Updates(map[string]any{"source_id": source.ID, "provider": job.Provider, "external_id": job.ExternalID, "company": job.Company, "title": job.Title, "description": job.Description, "apply_url": job.ApplyURL, "location": job.Location, "published_at": job.PublishedAt, "last_seen_at": job.LastSeenAt, "scraped_at": job.ScrapedAt, "is_active": true}).Error; err != nil {
 					log.Printf("Failed to refresh job %s: %v", job.URL, err)
 					continue
 				}
@@ -115,30 +112,6 @@ func RunScrapingCycle(db *gorm.DB) {
 					db.Model(&matchRecord).Updates(map[string]any{"match_score": match.Score, "match_reason": match.Reason})
 				}
 				matchedJobs++
-				var draft repository.JobDraft
-				draftErr := db.Where("user_id = ? AND job_id = ?", user.ID, existing.ID).First(&draft).Error
-				if draftErr == gorm.ErrRecordNotFound {
-					profileText := buildProfileText(user)
-					coverLetter, coverErr := services.GenerateDraft(profileText, existing.Description)
-					if coverErr != nil {
-						log.Printf("Cover letter generation unavailable for user %d job %d: %v", user.ID, existing.ID, coverErr)
-						coverLetter = "Review this official job posting and write a concise application note using only verified details from your resume."
-					}
-					roleResume, resumeErr := services.GenerateTailoredResume(profileText, existing.Title, existing.Description)
-					if resumeErr != nil {
-						log.Printf("Resume tailoring unavailable for user %d job %d: %v", user.ID, existing.ID, resumeErr)
-						roleResume = services.BuildRoleFocusedResume(user, existing.Title, existing.Description)
-					}
-					draft = repository.JobDraft{UserID: user.ID, JobID: existing.ID, DraftContent: coverLetter, TailoredResume: roleResume, Status: "pending"}
-					if err := db.Create(&draft).Error; err != nil {
-						log.Printf("Failed to create draft: %v", err)
-						continue
-					}
-					createdDrafts++
-				} else if draftErr != nil {
-					log.Printf("Failed to load draft for user %d job %d: %v", user.ID, existing.ID, draftErr)
-					continue
-				}
 				sendJobNotification(db, user, source, existing)
 			}
 		}
@@ -151,44 +124,11 @@ func RunScrapingCycle(db *gorm.DB) {
 			log.Printf("Failed to close stale jobs for source %d: %v", source.ID, err)
 		}
 	}
-	updateStatus(logMessage(discoveredJobs, matchedJobs, createdDrafts))
+	updateStatus(logMessage(discoveredJobs, matchedJobs))
 }
 
-func buildProfileText(user repository.User) string {
-	text := user.ResumeText
-	if user.ProfileSummary != "" {
-		text += "\nProfile Summary: " + user.ProfileSummary
-	}
-	if user.TargetRoles != "" {
-		text += "\nTarget Roles: " + user.TargetRoles
-	}
-	if user.Skills != "" {
-		text += "\nSkills: " + user.Skills
-	}
-	if user.Location != "" {
-		text += "\nLocation Preference: " + user.Location
-	}
-	var applicationAnswers []string
-	if user.NoticePeriod != "" {
-		applicationAnswers = append(applicationAnswers, "Notice period: "+user.NoticePeriod)
-	}
-	if user.ApplicantYearsExperience != "" {
-		applicationAnswers = append(applicationAnswers, "Experience: "+user.ApplicantYearsExperience)
-	}
-	if user.SalaryExpectation != "" {
-		applicationAnswers = append(applicationAnswers, "Expected CTC: "+user.SalaryExpectation)
-	}
-	if len(applicationAnswers) > 0 {
-		text += "\nCandidate-confirmed application answers (use only when a form or job asks; do not modify):\n" + strings.Join(applicationAnswers, "\n")
-	}
-	if user.ApplicantProjects != "" {
-		text += "\nCandidate's verified project highlights (use only when directly relevant to this job or when project experience is requested; do not force into unrelated applications):\n" + user.ApplicantProjects
-	}
-	return text
-}
-
-func logMessage(discoveredJobs, matchedJobs, createdDrafts int) string {
-	return "ATS listings currently published: " + strconv.Itoa(discoveredJobs) + ", profile matches: " + strconv.Itoa(matchedJobs) + ", new resume/application drafts: " + strconv.Itoa(createdDrafts) + "."
+func logMessage(discoveredJobs, matchedJobs int) string {
+	return "Listings currently published: " + strconv.Itoa(discoveredJobs) + ", profile matches: " + strconv.Itoa(matchedJobs) + ". No applications were submitted because employer-authorized ATS access is not configured."
 }
 
 func updateStatus(message string) {
