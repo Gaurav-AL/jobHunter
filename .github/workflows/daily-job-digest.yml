@@ -30,4 +30,6 @@ jobs:
           SMTP_PORT: '587'
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          JOBVETTA_API_KEY: ${{ secrets.JOBVETTA_API_KEY }}
         run: python scripts/daily_job_digest.py
