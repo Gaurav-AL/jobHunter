@@ -16,18 +16,18 @@ import urllib.request
 from email.message import EmailMessage
 
 PROFILE = {
-    "years_experience": 3,
+    "years_experience": 2.2,
     "roles": [
         "software engineer", "backend engineer", "backend developer",
-        "software development engineer", "platform engineer", "site reliability engineer",
-        "distributed systems engineer", "associate software engineer",
+        "software development engineer", "associate software engineer",
+        "software developer", "software engineer freelancer",
     ],
     "skills": [
-        "java", "python", "go", "golang", "c++", "cobol", "spring boot",
-        "django", "flask", "gin", "fastapi", "docker", "kubernetes", "mysql",
-        "grafana", "redash", "linux", "aws", "gcp", "microservices",
-        "distributed systems", "canary deployment", "observability", "integration testing",
-        "database connection pooling", "production support", "concurrency",
+        "java", "python", "go", "golang", "c++", "spring boot", "django",
+        "flask", "gin", "fastapi", "docker", "kubernetes", "mysql", "grafana",
+        "redash", "git", "tuxedo", "postman", "agentic ai", "linux", "aws", "gcp",
+        "microservices", "distributed systems", "canary deployment", "observability",
+        "integration testing", "database connection pooling", "production support", "concurrency",
     ],
 }
 
@@ -53,8 +53,8 @@ def search_jobs() -> tuple[list[dict], int]:
         if not url or not title:
             return
         item = {
-            "id": key or url, "title": title, "company": company or "Unknown company",
-            "location": location or "India", "url": url,
+            "id": key or url, "title": title, "company": company or "Company not provided",
+            "location": location or "Location not specified", "url": url,
             "description": description or "", "pubDate": posted,
             "salary_text": salary, "source": source, "raw": raw,
         }
@@ -152,7 +152,7 @@ def search_jobs() -> tuple[list[dict], int]:
         text = f"{title} {description}".lower()
         if not any(term in title.lower() for term in ("engineer", "developer", "sre", "programmer")):
             continue
-        # Focus on roles aligned with roughly three years' experience.
+        # Focus on roles aligned with the user's roughly 2.2 years' experience.
         if any(term in title.lower() for term in ("senior", "staff", "principal", "director", "engineering manager", "head of", "vice president", "vp ", "lead engineer")):
             continue
         skill_matches = [skill for skill in PROFILE["skills"] if re.search(r"(?<![a-z0-9])" + re.escape(skill) + r"(?![a-z0-9])", text)]
@@ -167,9 +167,9 @@ def search_jobs() -> tuple[list[dict], int]:
         job = {
             "id": raw.get("id"),
             "title": title,
-            "company": raw.get("company") or "Unknown company",
+            "company": raw.get("company") or "Company not provided",
             "description": description,
-            "location": raw.get("location") or "Remote",
+            "location": raw.get("location") or "Location not specified",
             "url": raw.get("url", ""),
             "created": created,
             "salary_min": (raw.get("raw") or {}).get("salaryMin"),
@@ -190,7 +190,7 @@ def diversify_by_company(candidates: list[tuple], limit: int) -> list[tuple]:
     """Preserve fit ranking while spreading the digest across distinct employers."""
     groups: dict[str, list[tuple]] = {}
     for item in candidates:
-        employer = item[2].get("company", "Unknown company")
+        employer = item[2].get("company", "Company not provided")
         key = " ".join(employer.casefold().split())
         groups.setdefault(key, []).append(item)
     # Prioritize employers whose best listing is the strongest match, then take one
@@ -275,6 +275,12 @@ def salary_text(job: dict) -> str:
     low, high = job.get("salary_min"), job.get("salary_max")
     currency = job.get("salary_currency", "")
     period = job.get("salary_period", "")
+    def number(value: object) -> float | None:
+        try:
+            return float(str(value).replace(",", "").strip()) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+    low, high = number(low), number(high)
     if low and high:
         return f"{low:,.0f} - {high:,.0f} {currency} {period}".strip()
     if low:
@@ -304,10 +310,10 @@ def send_email(jobs: list[dict], total_fetched: int) -> None:
 
 
 def plain_body(jobs: list[dict], total_fetched: int, today: str) -> str:
-    lines = [f"Your JobHunter matches for {today}", "", f"Jobs fetched: {total_fetched}", f"Resume matches: {len(jobs)}", "Automatically applied: 0 (no supported employer submission integration)", "Applications reported failed: 0 (none attempted)", f"Manual follow-up required: {len(jobs)}", "Application success ratio: 0% — below 70%, so all matches are listed below for manual application.", ""]
+    lines = [f"Your JobHunter matches for {today}", "", f"Unique listings returned by feeds: {total_fetched}", f"Fresh resume matches: {len(jobs)}", "Applications submitted/failed: Not tracked by the job digest", f"Manual follow-up required: {len(jobs)}", "Application success ratio: N/A (the digest does not submit applications).", ""]
     for i, job in enumerate(jobs, 1):
         lines.extend([f"{i}. {job['title']} — {job['company']}", f"   {job['location']} | posted {job['created']} | salary: {job['salary']}", f"   Resume fit: {', '.join(job['skills'])}", f"   Source: {job['source']}", f"   Listing: {job['url']}", ""])
-    lines.append("Jobs are searched from India-wide Google Jobs results when SERPAPI_API_KEY is configured, plus India-eligible remote feeds. Search APIs return listings, not a general-purpose application submission service. No application was submitted; review each employer's questions, consent terms, and listing before applying.")
+    lines.append("Jobs are searched from India-wide Google Jobs results when SERPAPI_API_KEY is configured, plus India-eligible/APAC remote feeds. Job boards return listings, not a universal application submission service. No application was submitted, so there is no submission success ratio. After you submit, employer confirmation emails go directly to your application email when that employer sends them; this digest does not read or impersonate those messages. Review each employer's questions and listing before applying.")
     return "\n".join(lines)
 
 
@@ -315,8 +321,8 @@ def html_body(jobs: list[dict], total_fetched: int, today: str) -> str:
     dashboard = ("<table role='presentation' style='width:100%;border-collapse:collapse;margin:18px 0'>"
                  "<tr>" + "".join(
                      f"<td style='background:#f1f5f9;padding:16px;border-radius:8px;text-align:center'><div style='font-size:24px;font-weight:bold'>{value}</div><div style='color:#475569'>{html.escape(label)}</div></td>"
-                     for value, label in [(str(total_fetched), "Jobs fetched"), (str(len(jobs)), "Resume matches"), ("0", "Auto-applied"), (str(len(jobs)), "Manual follow-up")]
-                 ) + "</tr></table><p><b>Application success ratio: 0%.</b> This is below your 70% threshold, so every matching job is included below for manual follow-up. No application was attempted or falsely counted as failed.</p>")
+                     for value, label in [(str(total_fetched), "Unique feed listings"), (str(len(jobs)), "Fresh resume matches"), (str(len(jobs)), "Manual follow-up")]
+                 ) + "</tr></table><p><b>Applications submitted/failed: not tracked by this job digest.</b> Application success ratio: N/A because the digest does not submit applications.</p>")
     cards = []
     for i, job in enumerate(jobs, 1):
         cards.append(f"<li><h3>{i}. {html.escape(job['title'])} — {html.escape(job['company'])}</h3><p>{html.escape(job['location'])} · Posted {html.escape(job['created'])} · Salary: {html.escape(job['salary'])}</p><p>Resume fit: {html.escape(', '.join(job['skills']))}</p><p>Source: {html.escape(job['source'])}</p><p><a href=\"{html.escape(job['url'], quote=True)}\">Open listing / application</a></p></li>")
@@ -332,7 +338,7 @@ def main() -> int:
                 raise RuntimeError("No listings were returned by configured job sources; configure SERPAPI_API_KEY for India-wide Google Jobs search.")
             jobs = []
         send_email(jobs, total_fetched)
-        print(f"Fetched {total_fetched}; resume matches {len(jobs)}; applications submitted 0; sent digest to {os.getenv('JOB_EMAIL_TO', 'gauravchaudhary.hck@gmail.com')}.")
+        print(f"Fetched {total_fetched} unique listings; resume matches {len(jobs)}; application submissions are not tracked by this digest; sent digest to {os.getenv('JOB_EMAIL_TO', 'gauravchaudhary.hck@gmail.com')}.")
         if len(jobs) < 20:
             print(f"Only {len(jobs)} eligible current listings were available today; no fictitious listings were added.")
         return 0

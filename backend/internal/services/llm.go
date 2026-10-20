@@ -62,7 +62,7 @@ func generateWithAICC(prompt string) (string, error) {
 func GenerateDraft(resumeText, jobDescription string) (string, error) {
 	prompt := fmt.Sprintf(`You are an expert career coach. Based on the provided resume/profile and job description, draft a highly compelling and personalized cover letter or application message.
 	
-Resume/Profile (include a project only if it is directly relevant to this job or the application asks for project experience; do not force unrelated projects into the response):
+Resume/Profile and user-confirmed application answers (use notice period, experience, and expected CTC only if the application asks; include a project only if directly relevant or project experience is requested; do not force unrelated information):
 %s
 
 Job Description:

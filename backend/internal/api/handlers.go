@@ -600,29 +600,30 @@ func GetProfile(c *gin.Context, db *gorm.DB) {
 
 func UpdateProfile(c *gin.Context, db *gorm.DB) {
 	var req struct {
-		UserID              uint   `json:"user_id"`
-		FirebaseUID         string `json:"firebase_uid"`
-		ProfileSummary      string `json:"profile_summary"`
-		TargetRoles         string `json:"target_roles"`
-		Skills              string `json:"skills"`
-		Location            string `json:"location"`
-		CronFrequency       string `json:"cron_frequency"`
-		ApplicantFirstName  string `json:"applicant_first_name"`
-		ApplicantLastName   string `json:"applicant_last_name"`
-		ApplicantPhone      string `json:"applicant_phone"`
-		ApplicantAddress    string `json:"applicant_address"`
-		ApplicantCity       string `json:"applicant_city"`
-		ApplicantRegion     string `json:"applicant_region"`
-		ApplicantPostalCode string `json:"applicant_postal_code"`
-		ApplicantCountry    string `json:"applicant_country"`
-		ApplicantLinkedIn   string `json:"applicant_linkedin"`
-		ApplicantWebsite    string `json:"applicant_website"`
-		ApplicantGitHub     string `json:"applicant_github"`
-		ApplicantProjects   string `json:"applicant_projects"`
-		WorkAuthorization   string `json:"work_authorization"`
-		VisaSponsorship     string `json:"visa_sponsorship"`
-		NoticePeriod        string `json:"notice_period"`
-		SalaryExpectation   string `json:"salary_expectation"`
+		UserID                   uint   `json:"user_id"`
+		FirebaseUID              string `json:"firebase_uid"`
+		ProfileSummary           string `json:"profile_summary"`
+		TargetRoles              string `json:"target_roles"`
+		Skills                   string `json:"skills"`
+		Location                 string `json:"location"`
+		CronFrequency            string `json:"cron_frequency"`
+		ApplicantFirstName       string `json:"applicant_first_name"`
+		ApplicantLastName        string `json:"applicant_last_name"`
+		ApplicantPhone           string `json:"applicant_phone"`
+		ApplicantAddress         string `json:"applicant_address"`
+		ApplicantCity            string `json:"applicant_city"`
+		ApplicantRegion          string `json:"applicant_region"`
+		ApplicantPostalCode      string `json:"applicant_postal_code"`
+		ApplicantCountry         string `json:"applicant_country"`
+		ApplicantLinkedIn        string `json:"applicant_linkedin"`
+		ApplicantWebsite         string `json:"applicant_website"`
+		ApplicantGitHub          string `json:"applicant_github"`
+		ApplicantProjects        string `json:"applicant_projects"`
+		WorkAuthorization        string `json:"work_authorization"`
+		VisaSponsorship          string `json:"visa_sponsorship"`
+		NoticePeriod             string `json:"notice_period"`
+		ApplicantYearsExperience string `json:"applicant_years_experience"`
+		SalaryExpectation        string `json:"salary_expectation"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -634,26 +635,27 @@ func UpdateProfile(c *gin.Context, db *gorm.DB) {
 		return
 	}
 	updates := map[string]any{
-		"profile_summary":       req.ProfileSummary,
-		"target_roles":          req.TargetRoles,
-		"skills":                req.Skills,
-		"location":              req.Location,
-		"applicant_first_name":  req.ApplicantFirstName,
-		"applicant_last_name":   req.ApplicantLastName,
-		"applicant_phone":       req.ApplicantPhone,
-		"applicant_address":     req.ApplicantAddress,
-		"applicant_city":        req.ApplicantCity,
-		"applicant_region":      req.ApplicantRegion,
-		"applicant_postal_code": req.ApplicantPostalCode,
-		"applicant_country":     req.ApplicantCountry,
-		"applicant_linkedin":    req.ApplicantLinkedIn,
-		"applicant_website":     req.ApplicantWebsite,
-		"applicant_github":      req.ApplicantGitHub,
-		"applicant_projects":    req.ApplicantProjects,
-		"work_authorization":    req.WorkAuthorization,
-		"visa_sponsorship":      req.VisaSponsorship,
-		"notice_period":         req.NoticePeriod,
-		"salary_expectation":    req.SalaryExpectation,
+		"profile_summary":            req.ProfileSummary,
+		"target_roles":               req.TargetRoles,
+		"skills":                     req.Skills,
+		"location":                   req.Location,
+		"applicant_first_name":       req.ApplicantFirstName,
+		"applicant_last_name":        req.ApplicantLastName,
+		"applicant_phone":            req.ApplicantPhone,
+		"applicant_address":          req.ApplicantAddress,
+		"applicant_city":             req.ApplicantCity,
+		"applicant_region":           req.ApplicantRegion,
+		"applicant_postal_code":      req.ApplicantPostalCode,
+		"applicant_country":          req.ApplicantCountry,
+		"applicant_linkedin":         req.ApplicantLinkedIn,
+		"applicant_website":          req.ApplicantWebsite,
+		"applicant_github":           req.ApplicantGitHub,
+		"applicant_projects":         req.ApplicantProjects,
+		"work_authorization":         req.WorkAuthorization,
+		"visa_sponsorship":           req.VisaSponsorship,
+		"notice_period":              req.NoticePeriod,
+		"applicant_years_experience": req.ApplicantYearsExperience,
+		"salary_expectation":         req.SalaryExpectation,
 	}
 	if req.CronFrequency != "" {
 		updates["cron_frequency"] = req.CronFrequency
@@ -675,6 +677,23 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 	}
 	var user repository.User
 	db.First(&user, userID)
+	// Seed the explicit answers the user requested once; later profile edits win.
+	answerDefaults := map[string]any{}
+	if strings.TrimSpace(user.NoticePeriod) == "" {
+		user.NoticePeriod = "Immediate joiner"
+		answerDefaults["notice_period"] = user.NoticePeriod
+	}
+	if strings.TrimSpace(user.ApplicantYearsExperience) == "" {
+		user.ApplicantYearsExperience = "2.2 years"
+		answerDefaults["applicant_years_experience"] = user.ApplicantYearsExperience
+	}
+	if strings.TrimSpace(user.SalaryExpectation) == "" {
+		user.SalaryExpectation = "₹10 LPA"
+		answerDefaults["salary_expectation"] = user.SalaryExpectation
+	}
+	if len(answerDefaults) > 0 {
+		db.Model(&repository.User{}).Where("id = ?", userID).Updates(answerDefaults)
+	}
 	if strings.TrimSpace(user.ApplicantProjects) == "" {
 		user.ApplicantProjects = jobHunterProjectHighlight
 		db.Model(&repository.User{}).Where("id = ?", userID).Update("applicant_projects", user.ApplicantProjects)
@@ -748,34 +767,35 @@ func DiscoverSources(c *gin.Context, db *gorm.DB) {
 
 func profileResponse(user repository.User) gin.H {
 	return gin.H{
-		"id":                    user.ID,
-		"email":                 user.Email,
-		"resume_url":            user.ResumeURL,
-		"resume_text":           user.ResumeText,
-		"profile_summary":       user.ProfileSummary,
-		"target_roles":          user.TargetRoles,
-		"skills":                user.Skills,
-		"location":              user.Location,
-		"applicant_first_name":  user.ApplicantFirstName,
-		"applicant_last_name":   user.ApplicantLastName,
-		"applicant_phone":       user.ApplicantPhone,
-		"applicant_address":     user.ApplicantAddress,
-		"applicant_city":        user.ApplicantCity,
-		"applicant_region":      user.ApplicantRegion,
-		"applicant_postal_code": user.ApplicantPostalCode,
-		"applicant_country":     user.ApplicantCountry,
-		"applicant_linkedin":    user.ApplicantLinkedIn,
-		"applicant_website":     user.ApplicantWebsite,
-		"applicant_github":      user.ApplicantGitHub,
-		"applicant_projects":    user.ApplicantProjects,
-		"work_authorization":    user.WorkAuthorization,
-		"visa_sponsorship":      user.VisaSponsorship,
-		"notice_period":         user.NoticePeriod,
-		"salary_expectation":    user.SalaryExpectation,
-		"cron_frequency":        user.CronFrequency,
-		"whatsapp_number":       user.WhatsAppNumber,
-		"phone_verified":        user.PhoneVerified,
-		"sms_opt_in":            user.SMSOptIn,
+		"id":                         user.ID,
+		"email":                      user.Email,
+		"resume_url":                 user.ResumeURL,
+		"resume_text":                user.ResumeText,
+		"profile_summary":            user.ProfileSummary,
+		"target_roles":               user.TargetRoles,
+		"skills":                     user.Skills,
+		"location":                   user.Location,
+		"applicant_first_name":       user.ApplicantFirstName,
+		"applicant_last_name":        user.ApplicantLastName,
+		"applicant_phone":            user.ApplicantPhone,
+		"applicant_address":          user.ApplicantAddress,
+		"applicant_city":             user.ApplicantCity,
+		"applicant_region":           user.ApplicantRegion,
+		"applicant_postal_code":      user.ApplicantPostalCode,
+		"applicant_country":          user.ApplicantCountry,
+		"applicant_linkedin":         user.ApplicantLinkedIn,
+		"applicant_website":          user.ApplicantWebsite,
+		"applicant_github":           user.ApplicantGitHub,
+		"applicant_projects":         user.ApplicantProjects,
+		"work_authorization":         user.WorkAuthorization,
+		"visa_sponsorship":           user.VisaSponsorship,
+		"notice_period":              user.NoticePeriod,
+		"applicant_years_experience": user.ApplicantYearsExperience,
+		"salary_expectation":         user.SalaryExpectation,
+		"cron_frequency":             user.CronFrequency,
+		"whatsapp_number":            user.WhatsAppNumber,
+		"phone_verified":             user.PhoneVerified,
+		"sms_opt_in":                 user.SMSOptIn,
 	}
 }
 

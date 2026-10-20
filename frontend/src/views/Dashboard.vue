@@ -81,6 +81,7 @@
             <label>Work authorization<input v-model="profile.work_authorization" class="input-field" placeholder="Enter your own answer" /></label>
             <label>Visa sponsorship<input v-model="profile.visa_sponsorship" class="input-field" placeholder="Enter your own answer" /></label>
             <label>Notice period<input v-model="profile.notice_period" class="input-field" /></label>
+            <label>Experience<input v-model="profile.applicant_years_experience" class="input-field" placeholder="2.2 years" /></label>
             <label>Salary expectation<input v-model="profile.salary_expectation" class="input-field" /></label>
           </div>
 
@@ -308,6 +309,7 @@ const profile = reactive({
   work_authorization: '',
   visa_sponsorship: '',
   notice_period: '',
+  applicant_years_experience: '',
   salary_expectation: '',
 });
 
@@ -342,6 +344,7 @@ const applyProfile = (user: any) => {
   profile.work_authorization = user?.work_authorization || '';
   profile.visa_sponsorship = user?.visa_sponsorship || '';
   profile.notice_period = user?.notice_period || '';
+  profile.applicant_years_experience = user?.applicant_years_experience || '';
   profile.salary_expectation = user?.salary_expectation || '';
 };
 

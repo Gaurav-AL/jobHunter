@@ -168,6 +168,19 @@ func buildProfileText(user repository.User) string {
 	if user.Location != "" {
 		text += "\nLocation Preference: " + user.Location
 	}
+	var applicationAnswers []string
+	if user.NoticePeriod != "" {
+		applicationAnswers = append(applicationAnswers, "Notice period: "+user.NoticePeriod)
+	}
+	if user.ApplicantYearsExperience != "" {
+		applicationAnswers = append(applicationAnswers, "Experience: "+user.ApplicantYearsExperience)
+	}
+	if user.SalaryExpectation != "" {
+		applicationAnswers = append(applicationAnswers, "Expected CTC: "+user.SalaryExpectation)
+	}
+	if len(applicationAnswers) > 0 {
+		text += "\nCandidate-confirmed application answers (use only when a form or job asks; do not modify):\n" + strings.Join(applicationAnswers, "\n")
+	}
 	if user.ApplicantProjects != "" {
 		text += "\nCandidate's verified project highlights (use only when directly relevant to this job or when project experience is requested; do not force into unrelated applications):\n" + user.ApplicantProjects
 	}

@@ -35,7 +35,7 @@ Listings are refreshed every six hours and can also be checked with **Run Hunt N
 
 ### Stored applicant details
 
-Resume text is saved during upload and sent to the configured AICC/Gemini provider for structured profile extraction. Extracted fields fill only blank profile values; edit or correct them in **Personalisation → Stored applicant details**. Work authorization, visa sponsorship, notice period, and salary are never inferred and must be entered by you. Resume text and extracted details remain in your MySQL user record. The project highlights field is prefilled with this JobHunter project and included in generated drafts only when relevant to the role or when project experience is requested. Verify every generated answer before applying. The current app prepares applicant values for reuse; it does not inject them into or submit external employer forms.
+Resume text is saved during upload and sent to the configured AICC/Gemini provider for structured profile extraction. Extracted fields fill only blank profile values; edit or correct them in **Personalisation → Stored applicant details**. Work authorization and visa sponsorship are never inferred. The requested application answers are prefilled as Immediate joiner, 2.2 years, and ₹10 LPA; change them in your profile if needed. Resume text and extracted details remain in your MySQL user record. The project highlights field is prefilled with this JobHunter project and included in generated drafts only when relevant to the role or when project experience is requested. Verify every generated answer before applying. The current app prepares applicant values for reuse; it does not inject them into or submit external employer forms.
 
 ### SMS notifications
 
@@ -50,6 +50,7 @@ API routes require a Firebase ID token; the backend verifies its signature and p
 - Resume tailoring currently produces a reviewable plain-text draft. It may need formatting in a document editor before upload; always verify it against the original resume.
 - External application forms differ by employer. The ATS job-listing APIs do not provide one shared form-fill endpoint; Greenhouse submission requires employer-side API credentials, and Lever application forms have posting-specific fields. Open the official application page and review each answer.
 - JobHunter tracks that you clicked the manual confirmation button; it cannot independently verify a completed employer application.
+- The digest reports zero submissions only because JobHunter has no employer submission credentials configured. With no attempts, the success ratio is N/A, not 0%. Employer acknowledgement emails go directly to the email address on the application when the employer sends them; JobHunter cannot read or verify those messages.
 - A public listing being present in an ATS response is evidence it is listed there at refresh time, not a guarantee the employer is still accepting submissions.
 - SMS provider acceptance is not the same as confirmed handset delivery. Twilio's message status can remain queued or fail due to carrier/provider rules.
 
