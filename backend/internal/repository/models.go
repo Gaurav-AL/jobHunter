@@ -90,14 +90,16 @@ type Job struct {
 
 // JobMatch records a job that passed the resume/profile relevance filter.
 type JobMatch struct {
-	ID          uint   `gorm:"primaryKey"`
-	UserID      uint   `gorm:"not null;index:idx_user_job_match,unique"`
-	JobID       uint   `gorm:"not null;index:idx_user_job_match,unique"`
-	MatchScore  int    `gorm:"not null"`
-	MatchReason string `gorm:"type:text"`
-	Status      string `gorm:"size:32;default:'matched'"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID             uint   `gorm:"primaryKey"`
+	UserID         uint   `gorm:"not null;index:idx_user_job_match,unique"`
+	JobID          uint   `gorm:"not null;index:idx_user_job_match,unique"`
+	MatchScore     int    `gorm:"not null"`
+	MatchReason    string `gorm:"type:text"`
+	MatchedSkills  string `gorm:"type:text"`
+	RequiredSkills string `gorm:"type:text"`
+	Status         string `gorm:"size:32;default:'matched'"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // JobDraft represents a personalized draft for a user based on a job

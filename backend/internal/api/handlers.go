@@ -51,6 +51,8 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	api.GET("/drafts", func(c *gin.Context) { GetDrafts(c, db) })
 	api.POST("/drafts/:id/status", func(c *gin.Context) { UpdateDraftStatus(c, db) })
 	api.GET("/jobs/matches", func(c *gin.Context) { GetMatchedJobs(c, db) })
+	api.POST("/jobs/matches/:id/status", func(c *gin.Context) { UpdateMatchStatus(c, db) })
+	api.GET("/jobs/export.xlsx", func(c *gin.Context) { ExportMatchedJobsXLSX(c, db) })
 }
 
 func resolveUserID(db *gorm.DB, userIDValue, firebaseUID string) (uint, error) {
@@ -413,22 +415,24 @@ type DraftView struct {
 }
 
 type MatchedJobView struct {
-	ID          uint       `json:"ID"`
-	JobID       uint       `json:"JobID"`
-	JobTitle    string     `json:"JobTitle"`
-	JobURL      string     `json:"JobURL"`
-	ApplyURL    string     `json:"ApplyURL"`
-	Location    string     `json:"Location"`
-	PublishedAt *time.Time `json:"PublishedAt"`
-	LastSeenAt  time.Time  `json:"LastSeenAt"`
-	JobActive   bool       `json:"JobActive"`
-	Company     string     `json:"Company"`
-	Provider    string     `json:"Provider"`
-	SourceName  string     `json:"SourceName"`
-	SourceURL   string     `json:"SourceURL"`
-	MatchScore  int        `json:"MatchScore"`
-	MatchReason string     `json:"MatchReason"`
-	Status      string     `json:"Status"`
+	ID             uint       `json:"ID"`
+	JobID          uint       `json:"JobID"`
+	JobTitle       string     `json:"JobTitle"`
+	JobURL         string     `json:"JobURL"`
+	ApplyURL       string     `json:"ApplyURL"`
+	Location       string     `json:"Location"`
+	PublishedAt    *time.Time `json:"PublishedAt"`
+	LastSeenAt     time.Time  `json:"LastSeenAt"`
+	JobActive      bool       `json:"JobActive"`
+	Company        string     `json:"Company"`
+	Provider       string     `json:"Provider"`
+	SourceName     string     `json:"SourceName"`
+	SourceURL      string     `json:"SourceURL"`
+	MatchScore     int        `json:"MatchScore"`
+	MatchReason    string     `json:"MatchReason"`
+	MatchedSkills  string     `json:"MatchedSkills"`
+	RequiredSkills string     `json:"RequiredSkills"`
+	Status         string     `json:"Status"`
 }
 
 func GetDrafts(c *gin.Context, db *gorm.DB) {
@@ -497,25 +501,63 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 			db.First(&source, job.SourceID)
 		}
 		views = append(views, MatchedJobView{
-			ID:          match.ID,
-			JobID:       match.JobID,
-			JobTitle:    job.Title,
-			JobURL:      job.URL,
-			ApplyURL:    job.ApplyURL,
-			Location:    job.Location,
-			PublishedAt: job.PublishedAt,
-			LastSeenAt:  job.LastSeenAt,
-			JobActive:   job.IsActive,
-			Company:     job.Company,
-			Provider:    job.Provider,
-			SourceName:  source.Name,
-			SourceURL:   source.URL,
-			MatchScore:  match.MatchScore,
-			MatchReason: match.MatchReason,
-			Status:      match.Status,
+			ID:             match.ID,
+			JobID:          match.JobID,
+			JobTitle:       job.Title,
+			JobURL:         job.URL,
+			ApplyURL:       job.ApplyURL,
+			Location:       job.Location,
+			PublishedAt:    job.PublishedAt,
+			LastSeenAt:     job.LastSeenAt,
+			JobActive:      job.IsActive,
+			Company:        job.Company,
+			Provider:       job.Provider,
+			SourceName:     source.Name,
+			SourceURL:      source.URL,
+			MatchScore:     match.MatchScore,
+			MatchReason:    match.MatchReason,
+			MatchedSkills:  match.MatchedSkills,
+			RequiredSkills: match.RequiredSkills,
+			Status:         match.Status,
 		})
 	}
 	c.JSON(http.StatusOK, views)
+}
+
+func UpdateMatchStatus(c *gin.Context, db *gorm.DB) {
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status != "applied" && req.Status != "not_applied" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be applied or not_applied"})
+		return
+	}
+	var match repository.JobMatch
+	if err := db.Where("id = ? AND user_id = ?", c.Param("id"), userID).First(&match).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Matched job not found"})
+		return
+	}
+	if req.Status == "applied" {
+		var job repository.Job
+		if err := db.First(&job, match.JobID).Error; err != nil || !job.IsActive || (job.ApplyURL == "" && job.URL == "") {
+			c.JSON(http.StatusConflict, gin.H{"error": "This listing is no longer confirmed active. Verify it on the employer site before marking applied."})
+			return
+		}
+	}
+	if err := db.Model(&match).Update("status", req.Status).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update application status"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": req.Status, "message": "Application status saved as user-reported"})
 }
 
 func UpdateDraftStatus(c *gin.Context, db *gorm.DB) {
@@ -714,22 +756,24 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 			db.First(&source, job.SourceID)
 		}
 		matchedJobs = append(matchedJobs, MatchedJobView{
-			ID:          match.ID,
-			JobID:       match.JobID,
-			JobTitle:    job.Title,
-			JobURL:      job.URL,
-			ApplyURL:    job.ApplyURL,
-			Location:    job.Location,
-			PublishedAt: job.PublishedAt,
-			LastSeenAt:  job.LastSeenAt,
-			JobActive:   job.IsActive,
-			Company:     job.Company,
-			Provider:    job.Provider,
-			SourceName:  source.Name,
-			SourceURL:   source.URL,
-			MatchScore:  match.MatchScore,
-			MatchReason: match.MatchReason,
-			Status:      match.Status,
+			ID:             match.ID,
+			JobID:          match.JobID,
+			JobTitle:       job.Title,
+			JobURL:         job.URL,
+			ApplyURL:       job.ApplyURL,
+			Location:       job.Location,
+			PublishedAt:    job.PublishedAt,
+			LastSeenAt:     job.LastSeenAt,
+			JobActive:      job.IsActive,
+			Company:        job.Company,
+			Provider:       job.Provider,
+			SourceName:     source.Name,
+			SourceURL:      source.URL,
+			MatchScore:     match.MatchScore,
+			MatchReason:    match.MatchReason,
+			MatchedSkills:  match.MatchedSkills,
+			RequiredSkills: match.RequiredSkills,
+			Status:         match.Status,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{

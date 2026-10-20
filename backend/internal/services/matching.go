@@ -2,15 +2,56 @@ package services
 
 import (
 	"regexp"
-	"sort"
 	"strings"
 
 	"backend/internal/repository"
 )
 
 type MatchResult struct {
-	Score  int
-	Reason string
+	Score         int
+	Reason        string
+	MatchedSkills []string
+}
+
+// RelevantSkills returns the candidate's stated skills that are explicitly
+// present in the job listing. This is more useful than generic token overlap.
+func RelevantSkills(user repository.User, job repository.Job) []string {
+	jobText := normalizedPhraseText(job.Title + " " + job.Description)
+	profileSkills := strings.Split(strings.ReplaceAll(strings.ReplaceAll(user.Skills, "\n", ","), ";", ","), ",")
+	seen := map[string]bool{}
+	var hits []string
+	for _, item := range profileSkills {
+		skill := strings.TrimSpace(item)
+		if len(skill) < 2 {
+			continue
+		}
+		needle := normalizedPhraseText(skill)
+		if strings.Contains(jobText, needle) && !seen[strings.ToLower(skill)] {
+			seen[strings.ToLower(skill)] = true
+			hits = append(hits, skill)
+		}
+	}
+	return hits
+}
+
+var skillCatalog = []string{"Go", "Golang", "Java", "Python", "JavaScript", "TypeScript", "C++", "C#", "React", "Vue", "Angular", "Node.js", "Gin", "Django", "Flask", "Spring Boot", "FastAPI", "REST API", "GraphQL", "gRPC", "Microservices", "Distributed Systems", "MySQL", "PostgreSQL", "MongoDB", "Redis", "Docker", "Kubernetes", "AWS", "GCP", "Azure", "Linux", "Git", "CI/CD", "Jenkins", "Kafka", "RabbitMQ", "Terraform", "Machine Learning", "LLM", "Agentic AI", "HTML", "CSS", "SQL"}
+
+func JobSkillsAsked(job repository.Job) []string {
+	text := normalizedPhraseText(job.Title + " " + job.Description)
+	seen := map[string]bool{}
+	var skills []string
+	for _, skill := range skillCatalog {
+		needle := normalizedPhraseText(skill)
+		if strings.Contains(text, needle) && !seen[strings.ToLower(skill)] {
+			seen[strings.ToLower(skill)] = true
+			skills = append(skills, skill)
+		}
+	}
+	return skills
+}
+
+func normalizedPhraseText(value string) string {
+	return " " + strings.Join(splitTokenPattern.Split(strings.ToLower(value), -1), " ") + " "
 }
 
 var splitTokenPattern = regexp.MustCompile(`[^a-z0-9+#.]+`)
@@ -30,33 +71,63 @@ func MatchJobToProfile(user repository.User, job repository.Job) MatchResult {
 		user.Skills,
 		user.Location,
 	}, " ")
-	jobText := job.Title + " " + job.Description + " " + job.URL
-
 	profileTokens := weightedTokens(profileText)
-	jobTokens := weightedTokens(jobText)
 	if len(profileTokens) == 0 {
 		return MatchResult{Score: 10, Reason: "Profile is incomplete; add or extract a resume to improve matching."}
 	}
-
-	score := 0
-	var hits []string
-	for token, weight := range profileTokens {
-		if jobWeight, ok := jobTokens[token]; ok {
-			score += weight + jobWeight
-			hits = append(hits, token)
+	profileSkills := RelevantSkills(user, repository.Job{Title: profileText, Description: profileText})
+	if len(profileSkills) == 0 {
+		profileSkills = catalogSkillsInText(profileText)
+	}
+	jobSkills := JobSkillsAsked(job)
+	matchedSkills := make([]string, 0, len(jobSkills))
+	for _, skill := range jobSkills {
+		for _, candidateSkill := range profileSkills {
+			if strings.EqualFold(skill, candidateSkill) {
+				matchedSkills = append(matchedSkills, skill)
+				break
+			}
 		}
 	}
-	// Prefer direct ATS boards as requested. Aggregator jobs remain eligible,
-	// but rank below Greenhouse and the other direct company ATS sources.
+	skillFit := 0
+	if len(jobSkills) > 0 {
+		skillFit = len(matchedSkills) * 65 / len(jobSkills)
+	}
+	if len(profileSkills) == 0 {
+		skillFit = 0
+	}
+
+	// Role overlap is measured against the title so long resumes do not
+	// overwhelm the score and drive every result to 100%.
+	roleBasis := user.TargetRoles
+	if strings.TrimSpace(roleBasis) == "" {
+		roleBasis = user.ProfileSummary
+	}
+	titleTokens := weightedTokens(job.Title)
+	roleTokens := weightedTokens(roleBasis)
+	roleHits := 0
+	for token := range titleTokens {
+		if roleTokens[token] > 0 {
+			roleHits++
+		}
+	}
+	roleFit := 0
+	if len(titleTokens) > 0 {
+		roleFit = roleHits * 25 / len(titleTokens)
+	}
+	if roleHits == 0 && strings.TrimSpace(roleBasis) == "" {
+		roleFit = 8
+	}
+
+	score := skillFit + roleFit
+	// Provider quality is a small tie-breaker; relevance remains dominant.
 	switch strings.ToLower(job.Provider) {
 	case "greenhouse":
-		score += 20
+		score += 2
 	case "lever", "ashby":
-		score += 10
-	case "himalayas":
-		score -= 15
-	case "jobicy":
-		score -= 10
+		score += 1
+	case "himalayas", "jobicy":
+		score -= 2
 	}
 	// Treat India as a preference, not a hard filter: include remote listings and
 	// reduce explicit non-India matches while preserving other strong-fit roles.
@@ -64,50 +135,41 @@ func MatchJobToProfile(user repository.User, job repository.Job) MatchResult {
 		location := strings.ToLower(job.Location)
 		switch {
 		case strings.Contains(location, "india"):
-			score += 18
+			score += 8
 		case containsAny(location, "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "chennai", "delhi", "noida", "gurugram", "gurgaon", "kolkata", "ahmedabad", "kochi", "coimbatore", "jaipur", "indore"):
-			score += 16
+			score += 7
 		case location == "":
 			// Missing location is unknown, so it receives no preference bonus.
 		case strings.Contains(location, "remote") || strings.Contains(location, "anywhere"):
-			score += 5
+			score += 3
 		default:
-			score -= 8
+			score -= 5
 		}
-	}
-
-	titleBoost := 0
-	titleTokens := weightedTokens(job.Title)
-	for token := range titleTokens {
-		if profileTokens[token] > 0 {
-			titleBoost += 8
-		}
-	}
-	score += titleBoost
-
-	if strings.Contains(strings.ToLower(user.TargetRoles), strings.ToLower(job.Title)) {
-		score += 15
 	}
 
 	if score > 100 {
 		score = 100
 	}
-	sort.Slice(hits, func(i, j int) bool {
-		return profileTokens[hits[i]] > profileTokens[hits[j]]
-	})
-	if len(hits) > 6 {
-		hits = hits[:6]
-	}
-
-	reason := "Matched from resume/profile keywords."
-	if len(hits) > 0 {
-		reason = "Matched on: " + strings.Join(hits, ", ") + "."
+	reason := "Resume fit from listed skill coverage and target role overlap."
+	if len(matchedSkills) > 0 {
+		reason = "Matched skills: " + strings.Join(matchedSkills, ", ") + "."
 	}
 	if score < 25 {
 		reason = "Low resume/profile overlap. " + reason
 	}
 
-	return MatchResult{Score: score, Reason: reason}
+	return MatchResult{Score: score, Reason: reason, MatchedSkills: matchedSkills}
+}
+
+func catalogSkillsInText(text string) []string {
+	var found []string
+	lower := normalizedPhraseText(text)
+	for _, skill := range skillCatalog {
+		if strings.Contains(lower, normalizedPhraseText(skill)) {
+			found = append(found, skill)
+		}
+	}
+	return found
 }
 
 func prefersIndia(location string) bool {

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,13 +104,15 @@ func RunScrapingCycle(db *gorm.DB) {
 					continue
 				}
 				var matchRecord repository.JobMatch
-				result := db.Where("user_id = ? AND job_id = ?", user.ID, existing.ID).FirstOrCreate(&matchRecord, repository.JobMatch{UserID: user.ID, JobID: existing.ID, MatchScore: match.Score, MatchReason: match.Reason, Status: "matched"})
+				skillNames := strings.Join(match.MatchedSkills, ", ")
+				requiredSkills := strings.Join(services.JobSkillsAsked(existing), ", ")
+				result := db.Where("user_id = ? AND job_id = ?", user.ID, existing.ID).FirstOrCreate(&matchRecord, repository.JobMatch{UserID: user.ID, JobID: existing.ID, MatchScore: match.Score, MatchReason: match.Reason, MatchedSkills: skillNames, RequiredSkills: requiredSkills, Status: "not_applied"})
 				if result.Error != nil {
 					log.Printf("Failed to save job match: %v", result.Error)
 					continue
 				}
 				if result.RowsAffected == 0 {
-					db.Model(&matchRecord).Updates(map[string]any{"match_score": match.Score, "match_reason": match.Reason})
+					db.Model(&matchRecord).Updates(map[string]any{"match_score": match.Score, "match_reason": match.Reason, "matched_skills": skillNames, "required_skills": requiredSkills})
 				}
 				matchedJobs++
 				sendJobNotification(db, user, source, existing)

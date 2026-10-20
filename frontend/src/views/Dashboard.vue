@@ -6,6 +6,7 @@
         <h2>Your JobHunter dashboard</h2>
       </div>
       <div class="header-actions">
+        <button @click="exportJobs" class="btn btn-secondary" :disabled="matchedJobs.length === 0">Export job tracker</button>
         <button @click="refreshAll" class="btn btn-secondary" :disabled="loading">Refresh</button>
         <button @click="runHuntNow" class="btn btn-primary" :disabled="runningHunt">
           {{ runningHunt ? 'Running...' : 'Run Hunt Now' }}
@@ -209,17 +210,38 @@
             <small v-if="job.Provider || job.SourceName">Source: {{ job.Provider || job.SourceName }}</small>
             <p v-if="job.Location">{{ job.Location }}</p>
             <p>{{ job.MatchReason }}</p>
+            <p v-if="job.RequiredSkills" class="skill-hits"><strong>Skills asked:</strong> {{ job.RequiredSkills }}</p>
+            <p v-if="job.MatchedSkills" class="skill-hits"><strong>Your matching skills:</strong> {{ job.MatchedSkills }}</p>
             <small v-if="job.LastSeenAt">Confirmed on source board: {{ new Date(job.LastSeenAt).toLocaleString() }}</small>
           </div>
-          <button
-            v-if="job.SourceURL"
-            @click="addSource(job.SourceURL, job.Company || job.SourceURL)"
-            type="button"
-            class="btn btn-secondary"
-          >
-            Add Source
-          </button>
+          <div class="match-actions">
+            <span :class="['badge', job.Status === 'applied' ? 'applied' : 'pending']">{{ job.Status === 'applied' ? 'Applied' : 'Not applied' }}</span>
+            <button @click="setMatchStatus(job, job.Status === 'applied' ? 'not_applied' : 'applied')" type="button" :class="['btn', job.Status === 'applied' ? 'btn-secondary' : 'btn-success']" :disabled="updatingMatchId === job.ID || (!job.JobActive && job.Status !== 'applied')">
+              {{ updatingMatchId === job.ID ? 'Saving...' : job.Status === 'applied' ? 'Undo applied' : 'Mark applied' }}
+            </button>
+            <button v-if="job.SourceURL" @click="addSource(job.SourceURL, job.Company || job.SourceURL)" type="button" class="btn btn-secondary">Add Source</button>
+          </div>
         </article>
+      </div>
+    </section>
+
+    <section class="glass-card tracking-section">
+      <div class="section-header">
+        <div>
+          <h3>Application tracker</h3>
+          <p>Keep your job list ordered by resume fit. “Applied” is your own tracker status; it is not verified by the employer.</p>
+        </div>
+        <button @click="exportJobs" class="btn btn-primary" :disabled="matchedJobs.length === 0">Download Excel workbook</button>
+      </div>
+      <div class="tracking-overview">
+        <div class="tracker-chart" :style="chartStyle" role="img" :aria-label="`${appliedCount} applied, ${notAppliedCount} not applied`">
+          <div class="tracker-chart-center"><strong>{{ matchedJobs.length }}</strong><span>matched</span></div>
+        </div>
+        <div class="tracker-legend">
+          <p><i class="applied-dot"></i><strong>{{ appliedCount }}</strong> applied</p>
+          <p><i class="not-applied-dot"></i><strong>{{ notAppliedCount }}</strong> not applied</p>
+          <small>The counts update when you change a job’s status.</small>
+        </div>
       </div>
     </section>
 
@@ -288,6 +310,7 @@ const resumeMessage = ref('');
 const sourceQuery = ref('');
 const newSourceUrl = ref('');
 const newSourceName = ref('');
+const updatingMatchId = ref<number | null>(null);
 
 const profile = reactive({
   email: '',
@@ -316,6 +339,12 @@ const profile = reactive({
 });
 
 const pendingDrafts = computed(() => drafts.value.filter(draft => draft.Status === 'pending').length);
+const appliedCount = computed(() => matchedJobs.value.filter(job => job.Status === 'applied').length);
+const notAppliedCount = computed(() => matchedJobs.value.length - appliedCount.value);
+const chartStyle = computed(() => {
+  const applied = matchedJobs.value.length ? appliedCount.value / matchedJobs.value.length * 100 : 0;
+  return { background: `conic-gradient(#6ee7b7 0 ${applied}%, #c4b5fd ${applied}% 100%)` };
+});
 
 const firebaseParams = async () => {
   await authReady;
@@ -471,6 +500,38 @@ const updateStatus = async (id: number, status: string) => {
     body: JSON.stringify({ status }),
   });
   if (res.ok) await refreshAll();
+};
+
+const setMatchStatus = async (job: any, status: string) => {
+  updatingMatchId.value = job.ID;
+  try {
+    const res = await apiFetch(`/api/jobs/matches/${job.ID}/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not update application status.');
+    job.Status = status;
+  } catch (error: any) {
+    alert(error.message || 'Could not update application status.');
+  } finally {
+    updatingMatchId.value = null;
+  }
+};
+
+const exportJobs = async () => {
+  try {
+    const res = await apiFetch('/api/jobs/export.xlsx');
+    if (!res.ok) throw new Error('Could not export job tracker.');
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = href;
+    anchor.download = 'jobhunter-tracker.xlsx';
+    anchor.click();
+    URL.revokeObjectURL(href);
+  } catch (error: any) {
+    alert(error.message || 'Could not export job tracker.');
+  }
 };
 
 const downloadResume = (draft: any) => {
@@ -629,6 +690,42 @@ dt {
   border-radius: 0.5rem;
   background: rgba(15, 23, 42, 0.35);
 }
+.match-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem;
+  margin-top: 1rem;
+}
+.tracking-overview {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  padding: 1rem 0;
+}
+.tracker-chart {
+  width: 174px;
+  height: 174px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+.tracker-chart-center {
+  width: 112px;
+  height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #171827;
+}
+.tracker-chart-center strong { font-size: 1.7rem; }
+.tracker-chart-center span, .tracker-legend small { color: var(--text-secondary); }
+.tracker-legend p { display: flex; align-items: center; gap: .55rem; margin: .55rem 0; }
+.tracker-legend i { width: 12px; height: 12px; border-radius: 50%; }
+.applied-dot { background: #6ee7b7; }
+.not-applied-dot { background: #c4b5fd; }
 .match-card {
   min-height: 210px;
 }
@@ -694,6 +791,7 @@ button:disabled {
     align-items: stretch;
     flex-direction: column;
   }
+  .tracking-overview { align-items: flex-start; flex-direction: column; }
 }
 .resume-preview { white-space: pre-wrap; max-height: 24rem; overflow: auto; padding: 1rem; background: rgba(0,0,0,.2); border-radius: .5rem; }
 .draft-details { margin-top: .75rem; }
