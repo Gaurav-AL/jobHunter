@@ -51,6 +51,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	api.GET("/drafts", func(c *gin.Context) { GetDrafts(c, db) })
 	api.POST("/drafts/:id/status", func(c *gin.Context) { UpdateDraftStatus(c, db) })
 	api.GET("/jobs/matches", func(c *gin.Context) { GetMatchedJobs(c, db) })
+	api.POST("/jobs/matches/:id/draft", func(c *gin.Context) { PrepareJobDraft(c, db) })
 	api.POST("/jobs/matches/:id/status", func(c *gin.Context) { UpdateMatchStatus(c, db) })
 	api.GET("/jobs/export.xlsx", func(c *gin.Context) { ExportMatchedJobsXLSX(c, db) })
 }
@@ -114,7 +115,8 @@ func RegisterUser(c *gin.Context, db *gorm.DB) {
 }
 
 func UploadResume(c *gin.Context, db *gorm.DB) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 12<<20)
+	// Allow multipart framing overhead while keeping the actual resume file capped below.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 13<<20)
 	userID, err := authenticatedUserID(c, db)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -149,7 +151,7 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 		return
 	}
 
-	filePath := fmt.Sprintf("%s/%d%s", uploadDir, userID, ext)
+	filePath := filepath.Join(uploadDir, fmt.Sprintf("%d-%d%s", userID, time.Now().UnixNano(), ext))
 
 	if err := c.SaveUploadedFile(file, filePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
@@ -157,7 +159,26 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 	}
 
 	resumeText, extractionWarning := extractResumeText(filePath, ext)
+	if strings.TrimSpace(resumeText) == "" {
+		_ = os.Remove(filePath)
+		message := extractionWarning
+		if message == "" {
+			message = "No readable text was found in this resume."
+		}
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": message})
+		return
+	}
 	profileSummary := ""
+	storagePath := strings.TrimSpace(c.PostForm("storage_path"))
+	resumeURL := filePath
+	if storagePath != "" {
+		if !validFirebaseResumePath(storagePath, c.GetString("firebase_uid")) {
+			_ = os.Remove(filePath)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Firebase Storage resume path"})
+			return
+		}
+		resumeURL = "firebase-storage://" + storagePath
+	}
 	var aiApplicantProfile services.ApplicantExtraction
 	if resumeText != "" {
 		if generatedProfile, err := services.ExtractApplicantProfile(resumeText); err == nil {
@@ -169,48 +190,53 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 	}
 
 	updates := map[string]any{
-		"resume_url":  filePath,
+		"resume_url":  resumeURL,
 		"resume_text": resumeText,
 	}
-	// Structured extraction is sent to the user-configured AICC/Gemini provider.
-	// Only blank fields are filled so reviewed profile values remain authoritative.
-	if resumeText != "" {
-		var existing repository.User
-		if err := db.First(&existing, userID).Error; err == nil {
-			applicantValues := applicantExtractionValues(aiApplicantProfile)
-			for column, value := range extractApplicantDetailsLocal(resumeText) {
-				if applicantValues[column] == "" {
-					applicantValues[column] = value
-				}
-			}
-			for column, value := range applicantValues {
-				if strings.TrimSpace(value) != "" && applicantFieldEmpty(existing, column) {
-					updates[column] = value
-				}
-			}
-			if strings.TrimSpace(existing.ProfileSummary) != "" {
-				delete(updates, "profile_summary")
-			} else if aiApplicantProfile.ProfileSummary != "" {
-				updates["profile_summary"] = aiApplicantProfile.ProfileSummary
-			}
-			if strings.TrimSpace(existing.TargetRoles) == "" && aiApplicantProfile.TargetRoles != "" {
-				updates["target_roles"] = aiApplicantProfile.TargetRoles
-			}
-			if strings.TrimSpace(existing.Skills) == "" && aiApplicantProfile.Skills != "" {
-				updates["skills"] = aiApplicantProfile.Skills
-			}
-			if strings.TrimSpace(existing.Location) == "" && aiApplicantProfile.Location != "" {
-				updates["location"] = aiApplicantProfile.Location
-			}
-			if strings.TrimSpace(existing.ApplicantProjects) == "" {
-				updates["applicant_projects"] = jobHunterProjectHighlight
-			}
+	// A newly uploaded resume is an explicit request to refresh resume-derived fields.
+	// Preserve application preferences and answers (notice period, experience, CTC,
+	// authorization), which are managed separately by the user in Profile settings.
+	var existing repository.User
+	if err := db.First(&existing, userID).Error; err != nil {
+		_ = os.Remove(filePath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not load applicant profile"})
+		return
+	}
+	applicantValues := applicantExtractionValues(aiApplicantProfile)
+	for column, value := range extractApplicantDetailsLocal(resumeText) {
+		if applicantValues[column] == "" {
+			applicantValues[column] = value
 		}
+	}
+	for column, value := range applicantValues {
+		if strings.TrimSpace(value) != "" {
+			updates[column] = strings.TrimSpace(value)
+		}
+	}
+	for column, value := range map[string]string{
+		"profile_summary": aiApplicantProfile.ProfileSummary,
+		"target_roles":    aiApplicantProfile.TargetRoles,
+		"skills":          aiApplicantProfile.Skills,
+		"location":        aiApplicantProfile.Location,
+	} {
+		if strings.TrimSpace(value) != "" {
+			updates[column] = strings.TrimSpace(value)
+		}
+	}
+	if strings.TrimSpace(existing.ApplicantProjects) == "" {
+		updates["applicant_projects"] = jobHunterProjectHighlight
 	}
 
 	if err := db.Model(&repository.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+		_ = os.Remove(filePath)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update resume path"})
 		return
+	}
+	if existing.ResumeURL != "" && existing.ResumeURL != resumeURL && strings.HasPrefix(filepath.Clean(existing.ResumeURL), filepath.Clean(uploadDir)+string(os.PathSeparator)) {
+		_ = os.Remove(existing.ResumeURL)
+	}
+	if storagePath != "" {
+		_ = os.Remove(filePath)
 	}
 
 	var updatedUser repository.User
@@ -218,11 +244,26 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 	c.JSON(http.StatusOK, gin.H{
 		"message":           "Resume uploaded successfully",
 		"path":              filePath,
+		"storage_path":      storagePath,
+		"storage_used":      storagePath != "",
 		"extracted_chars":   len(resumeText),
 		"profile_summary":   profileSummary,
 		"applicant_profile": profileResponse(updatedUser),
 		"warning":           extractionWarning,
 	})
+}
+
+func validFirebaseResumePath(path, firebaseUID string) bool {
+	parts := strings.Split(path, "/")
+	if firebaseUID == "" || len(parts) != 3 || parts[0] != "resumes" || parts[1] != firebaseUID || parts[2] == "" || filepath.Base(parts[2]) != parts[2] {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(parts[2])) {
+	case ".pdf", ".docx", ".txt", ".md":
+		return true
+	default:
+		return false
+	}
 }
 
 type phoneVerificationRequest struct {
@@ -474,6 +515,75 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 		})
 	}
 	c.JSON(http.StatusOK, views)
+}
+
+// PrepareJobDraft builds a fact-checked, editable application pack for one
+// active profile match. Submission always happens on the employer's site.
+func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	matchID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || matchID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid matched job ID"})
+		return
+	}
+	var match repository.JobMatch
+	if err := db.Where("id = ? AND user_id = ?", matchID, userID).First(&match).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Matched job not found"})
+		return
+	}
+	var job repository.Job
+	if err := db.First(&job, match.JobID).Error; err != nil || !job.IsActive || (job.ApplyURL == "" && job.URL == "") {
+		c.JSON(http.StatusConflict, gin.H{"error": "This listing is no longer confirmed active or has no employer application link"})
+		return
+	}
+	var user repository.User
+	if err := db.First(&user, userID).Error; err != nil || strings.TrimSpace(user.ResumeText) == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "Upload a readable resume before preparing application materials"})
+		return
+	}
+	profileFacts := fmt.Sprintf("\n\nUser-confirmed application answers (use only when the form asks):\nNotice period: %s\nExperience: %s\nExpected compensation: %s\nApplicant project notes: %s",
+		user.NoticePeriod, user.ApplicantYearsExperience, user.SalaryExpectation, user.ApplicantProjects)
+	resumeForDraft := user.ResumeText + profileFacts
+	jobContext := fmt.Sprintf("Title: %s\nCompany: %s\nLocation: %s\n\nDescription:\n%s", job.Title, job.Company, job.Location, job.Description)
+	cover, coverErr := services.GenerateDraft(resumeForDraft, jobContext)
+	if coverErr != nil {
+		cover = buildApplicationMessage(user, job)
+	}
+	tailored, resumeErr := services.GenerateTailoredResume(user.ResumeText, job.Title, job.Description)
+	if resumeErr != nil {
+		tailored = services.BuildRoleFocusedResume(user, job.Title, job.Description)
+	}
+
+	var draft repository.JobDraft
+	err = db.Where("user_id = ? AND job_id = ?", userID, job.ID).First(&draft).Error
+	if err == gorm.ErrRecordNotFound {
+		draft = repository.JobDraft{UserID: userID, JobID: job.ID, Status: "pending"}
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not load existing application pack"})
+		return
+	}
+	draft.DraftContent = cover
+	draft.TailoredResume = tailored
+	draft.Status = "pending"
+	if err := db.Save(&draft).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not save application pack"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"draft_id": draft.ID, "message": "Application pack prepared for your review", "ai_cover_letter": coverErr == nil, "ai_tailored_resume": resumeErr == nil, "review_required": true})
+}
+
+func buildApplicationMessage(user repository.User, job repository.Job) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "Application note — %s at %s\n\n", job.Title, job.Company)
+	out.WriteString("I am interested in this role and would welcome the opportunity to discuss how my background aligns with the position. The attached resume contains my verified experience and skills.\n\n")
+	if user.ApplicantFirstName != "" {
+		out.WriteString("Regards,\n" + user.ApplicantFirstName + " " + user.ApplicantLastName)
+	}
+	return out.String()
 }
 
 func GetMatchedJobs(c *gin.Context, db *gorm.DB) {

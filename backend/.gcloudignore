@@ -1,0 +1,14 @@
+# Never send local credentials, private uploads, or source-control metadata to Cloud Build.
+.env
+.env.*
+**/.env
+**/.env.*
+uploads/
+tmp/
+/server
+*.exe
+*.sql
+.git/
+*.pem
+*.key
+service-account*.json

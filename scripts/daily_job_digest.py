@@ -271,6 +271,23 @@ def format_job(item: tuple) -> dict:
     }
 
 
+def company_recommendations(jobs: list[dict], limit: int = 8) -> list[dict]:
+    """Suggest real employers in today's matches and link to ATS career-board discovery."""
+    seen: set[str] = set()
+    recommendations = []
+    for job in jobs:
+        company = str(job.get("company", "")).strip()
+        key = " ".join(company.casefold().split())
+        if not company or key in seen or key == "company not provided":
+            continue
+        seen.add(key)
+        query = urllib.parse.urlencode({"q": f'{company} careers Greenhouse Lever Ashby jobs'})
+        recommendations.append({"company": company, "url": "https://www.google.com/search?" + query})
+        if len(recommendations) == limit:
+            break
+    return recommendations
+
+
 def salary_text(job: dict) -> str:
     low, high = job.get("salary_min"), job.get("salary_max")
     currency = job.get("salary_currency", "")
@@ -288,7 +305,41 @@ def salary_text(job: dict) -> str:
     return "Not listed"
 
 
-def send_email(jobs: list[dict], total_fetched: int) -> None:
+def send_firebase_access_link() -> bool:
+    """Ask Firebase Auth to email today's one-time sign-in link (session lasts two hours)."""
+    api_key = os.getenv("FIREBASE_WEB_API_KEY", "").strip()
+    dashboard_url = os.getenv("JOBHUNTER_DASHBOARD_URL", "").strip().rstrip("/")
+    recipient = os.getenv("JOB_EMAIL_TO", "gauravchaudhary.hck@gmail.com").strip()
+    parsed = urllib.parse.urlparse(dashboard_url)
+    if not api_key or parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        print("Firebase access link not requested: set FIREBASE_WEB_API_KEY and a public HTTPS JOBHUNTER_DASHBOARD_URL.", file=sys.stderr)
+        return False
+    action = {
+        "requestType": "EMAIL_SIGNIN",
+        "email": recipient,
+        "continueUrl": dashboard_url + "/login",
+        "canHandleCodeInApp": True,
+    }
+    request = urllib.request.Request(
+        "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?" + urllib.parse.urlencode({"key": api_key}),
+        data=json.dumps(action).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json", "Referer": dashboard_url + "/"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Firebase returned HTTP {response.status}")
+        return True
+    except urllib.error.HTTPError as exc:
+        # Never print the request URL, because it contains the Firebase web API key.
+        print(f"Firebase access link request failed (HTTP {exc.code}). Check Email link sign-in and the authorized domain.", file=sys.stderr)
+    except Exception as exc:
+        print(f"Firebase access link request failed ({type(exc).__name__}).", file=sys.stderr)
+    return False
+
+
+def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool) -> None:
     recipient = os.getenv("JOB_EMAIL_TO", "gauravchaudhary.hck@gmail.com").strip()
     sender = os.getenv("SMTP_USER", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
@@ -301,23 +352,40 @@ def send_email(jobs: list[dict], total_fetched: int) -> None:
     message["Subject"] = f"JobHunter: {len(jobs)} resume-matched software jobs — {today}"
     message["From"] = sender
     message["To"] = recipient
-    message.set_content(plain_body(jobs, total_fetched, today))
-    message.add_alternative(html_body(jobs, total_fetched, today), subtype="html")
+    dashboard_url = os.getenv("JOBHUNTER_DASHBOARD_URL", "").strip()
+    parsed_dashboard_url = urllib.parse.urlparse(dashboard_url)
+    if parsed_dashboard_url.scheme not in {"https", "http"} or not parsed_dashboard_url.netloc or parsed_dashboard_url.username or parsed_dashboard_url.password:
+        dashboard_url = ""
+    message.set_content(plain_body(jobs, total_fetched, today, dashboard_url, access_link_requested))
+    message.add_alternative(html_body(jobs, total_fetched, today, dashboard_url, access_link_requested), subtype="html")
     with smtplib.SMTP(host, port, timeout=30) as server:
         server.starttls()
         server.login(sender, password)
         server.send_message(message)
 
 
-def plain_body(jobs: list[dict], total_fetched: int, today: str) -> str:
+def plain_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: str = "", access_link_requested: bool = False) -> str:
     lines = [f"Your JobHunter matches for {today}", "", f"Unique listings returned by feeds: {total_fetched}", f"Fresh resume matches: {len(jobs)}", "Applications submitted/failed: Not tracked by the job digest", f"Manual follow-up required: {len(jobs)}", "Application success ratio: N/A (the digest does not submit applications).", ""]
+    if dashboard_url:
+        lines.extend([f"Open your dashboard: {dashboard_url}"])
+        if access_link_requested:
+            lines.append("Firebase has sent a separate one-time sign-in email. Access lasts two hours after sign-in; enter this same email address when prompted.")
+        else:
+            lines.append("Temporary sign-in link was not sent today. Open the dashboard and request a link on the sign-in page.")
+        lines.append("")
+    recommendations = company_recommendations(jobs)
+    if recommendations:
+        lines.extend(["Companies to add from today's top matches:"])
+        for recommendation in recommendations:
+            lines.append(f"- {recommendation['company']}: {recommendation['url']} (find its public Greenhouse, Lever, or Ashby board, then add that board URL in JobHunter)")
+        lines.append("")
     for i, job in enumerate(jobs, 1):
         lines.extend([f"{i}. {job['title']} — {job['company']}", f"   {job['location']} | posted {job['created']} | salary: {job['salary']}", f"   Resume fit: {', '.join(job['skills'])}", f"   Source: {job['source']}", f"   Listing: {job['url']}", ""])
     lines.append("Jobs are searched from India-wide Google Jobs results when SERPAPI_API_KEY is configured, plus India-eligible/APAC remote feeds. Job boards return listings, not a universal application submission service. No application was submitted, so there is no submission success ratio. After you submit, employer confirmation emails go directly to your application email when that employer sends them; this digest does not read or impersonate those messages. Review each employer's questions and listing before applying.")
     return "\n".join(lines)
 
 
-def html_body(jobs: list[dict], total_fetched: int, today: str) -> str:
+def html_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: str = "", access_link_requested: bool = False) -> str:
     dashboard = ("<table role='presentation' style='width:100%;border-collapse:collapse;margin:18px 0'>"
                  "<tr>" + "".join(
                      f"<td style='background:#f1f5f9;padding:16px;border-radius:8px;text-align:center'><div style='font-size:24px;font-weight:bold'>{value}</div><div style='color:#475569'>{html.escape(label)}</div></td>"
@@ -327,7 +395,16 @@ def html_body(jobs: list[dict], total_fetched: int, today: str) -> str:
     for i, job in enumerate(jobs, 1):
         cards.append(f"<li><h3>{i}. {html.escape(job['title'])} — {html.escape(job['company'])}</h3><p>{html.escape(job['location'])} · Posted {html.escape(job['created'])} · Salary: {html.escape(job['salary'])}</p><p>Resume fit: {html.escape(', '.join(job['skills']))}</p><p>Source: {html.escape(job['source'])}</p><p><a href=\"{html.escape(job['url'], quote=True)}\">Open listing / application</a></p></li>")
     note = "India-wide Google Jobs search is enabled when SERPAPI_API_KEY is configured. No-key sources add India-eligible remote roles. Listings are ranked by resume fit, level, and freshness. Search providers do not provide a universal application submission service; review employer questions, consent terms, and current availability before applying."
-    return f"<html><body style='font-family:Arial,sans-serif;color:#0f172a;max-width:850px;margin:auto;padding:20px'><h1>JobHunter daily dashboard — {html.escape(today)}</h1>{dashboard}<p style='color:#475569'>{html.escape(note)}</p><h2>Manual follow-up list</h2><ol>{''.join(cards)}</ol></body></html>"
+    dashboard_link = ""
+    if dashboard_url:
+        sign_in_note = ("Firebase sent a separate one-time sign-in email. Access lasts two hours after sign-in." if access_link_requested else "No temporary sign-in email was sent today; request one from the sign-in page.")
+        dashboard_link = f"<p><a href=\"{html.escape(dashboard_url, quote=True)}\" style='display:inline-block;background:#4f46e5;color:white;padding:12px 18px;border-radius:8px;text-decoration:none'>Open JobHunter dashboard</a></p><p>{html.escape(sign_in_note)}</p>"
+    recommendations = company_recommendations(jobs)
+    company_section = ""
+    if recommendations:
+        company_cards = "".join(f"<li><b>{html.escape(item['company'])}</b> — <a href=\"{html.escape(item['url'], quote=True)}\">find the company's public Greenhouse, Lever, or Ashby career board</a>, then add that board URL in JobHunter.</li>" for item in recommendations)
+        company_section = f"<h2>Companies to add from today's top matches</h2><ol>{company_cards}</ol>"
+    return f"<html><body style='font-family:Arial,sans-serif;color:#0f172a;max-width:850px;margin:auto;padding:20px'><h1>JobHunter daily dashboard — {html.escape(today)}</h1>{dashboard_link}{dashboard}<p style='color:#475569'>{html.escape(note)}</p>{company_section}<h2>Manual follow-up list</h2><ol>{''.join(cards)}</ol></body></html>"
 
 
 def main() -> int:
@@ -337,7 +414,8 @@ def main() -> int:
             if not total_fetched:
                 raise RuntimeError("No listings were returned by configured job sources; configure SERPAPI_API_KEY for India-wide Google Jobs search.")
             jobs = []
-        send_email(jobs, total_fetched)
+        access_link_requested = send_firebase_access_link()
+        send_email(jobs, total_fetched, access_link_requested)
         print(f"Fetched {total_fetched} unique listings; resume matches {len(jobs)}; application submissions are not tracked by this digest; sent digest to {os.getenv('JOB_EMAIL_TO', 'gauravchaudhary.hck@gmail.com')}.")
         if len(jobs) < 20:
             print(f"Only {len(jobs)} eligible current listings were available today; no fictitious listings were added.")

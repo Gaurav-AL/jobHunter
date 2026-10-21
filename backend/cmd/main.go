@@ -32,6 +32,9 @@ func initDB() {
 		if err == nil {
 			sqlDB, dbErr := db.DB()
 			if dbErr == nil {
+				sqlDB.SetMaxOpenConns(10)
+				sqlDB.SetMaxIdleConns(5)
+				sqlDB.SetConnMaxLifetime(5 * time.Minute)
 				err = sqlDB.Ping()
 			} else {
 				err = dbErr

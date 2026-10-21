@@ -40,7 +40,12 @@ type firebaseTokenClaims struct {
 	ExpiresAt int64  `json:"exp"`
 	IssuedAt  int64  `json:"iat"`
 	AuthTime  int64  `json:"auth_time"`
+	Firebase  struct {
+		SignInProvider string `json:"sign_in_provider"`
+	} `json:"firebase"`
 }
+
+const temporaryEmailLinkSessionLifetime = 2 * time.Hour
 
 func FirebaseAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -111,6 +116,9 @@ func verifyFirebaseIDToken(rawToken, projectID string) (string, error) {
 	}
 	if claims.ExpiresAt == 0 || now >= claims.ExpiresAt || claims.IssuedAt == 0 || claims.IssuedAt > now+30 || claims.AuthTime == 0 || claims.AuthTime > now+30 {
 		return "", fmt.Errorf("invalid token lifetime")
+	}
+	if claims.Firebase.SignInProvider == "emailLink" && now-claims.AuthTime > int64(temporaryEmailLinkSessionLifetime.Seconds()) {
+		return "", fmt.Errorf("temporary email-link session expired")
 	}
 	return claims.Subject, nil
 }

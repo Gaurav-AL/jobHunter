@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,18 @@ var (
 )
 
 func StartScheduler(db *gorm.DB) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("DISABLE_SCHEDULER")), "true") {
+		statusMu.Lock()
+		status.Running = false
+		status.LastRunMessage = "Background scheduler is disabled for this deployment."
+		status.NextRunHint = "Use Run now to refresh supported job boards."
+		statusMu.Unlock()
+		log.Println("Background job discovery scheduler disabled by configuration")
+		return
+	}
+	statusMu.Lock()
+	status.Running = true
+	statusMu.Unlock()
 	log.Println("Starting job discovery scheduler")
 	ticker := time.NewTicker(6 * time.Hour)
 	go func() {
@@ -39,9 +52,7 @@ func StartScheduler(db *gorm.DB) {
 func GetStatus() Status {
 	statusMu.RLock()
 	defer statusMu.RUnlock()
-	current := status
-	current.Running = true
-	return current
+	return status
 }
 
 func RunScrapingCycle(db *gorm.DB) {

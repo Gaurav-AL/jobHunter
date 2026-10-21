@@ -28,9 +28,9 @@
 
     <div class="glass-card">
       <h2>Resume</h2>
-      <p>Upload a text-based resume for applicant profile extraction and job matching. New runs link to the employer application form and do not create drafts.</p>
+      <p>Upload a text-based resume. The original file is stored in your private Firebase Storage folder; JobHunter extracts its text to refresh your profile and job matches.</p>
       <form @submit.prevent="uploadResume" class="flex items-center gap-4">
-        <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.doc,.docx,.txt,.md" />
+        <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.docx,.txt,.md" />
         <button type="submit" class="btn btn-success" :disabled="!selectedFile || uploading">{{ uploading ? 'Uploading…' : 'Upload resume' }}</button>
       </form>
       <p v-if="resumeMessage" role="status">{{ resumeMessage }}</p>
@@ -54,6 +54,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { apiFetch } from '../api';
+import { deleteFirebaseResumeUpload, deletePreviousFirebaseResume, uploadResumeToFirebase } from '../resumeStorage';
 
 const phone = ref('');
 const phoneVerified = ref(false);
@@ -70,11 +71,13 @@ const notice = ref('');
 const errorMessage = ref('');
 const sourceError = ref('');
 const resumeMessage = ref('');
+const resumeURL = ref('');
 
 const loadProfileAndSources = async () => {
   const [profileRes, sourcesRes] = await Promise.all([apiFetch('/api/users/profile'), apiFetch('/api/sources')]);
   if (profileRes.ok) {
     const user = await profileRes.json();
+    resumeURL.value = user.resume_url || '';
     phone.value = user.whatsapp_number || '';
     phoneVerified.value = !!user.phone_verified;
     smsOptIn.value = !!user.sms_opt_in;
@@ -120,14 +123,25 @@ const handleFileUpload = (event: Event) => { selectedFile.value = (event.target 
 const uploadResume = async () => {
   if (!selectedFile.value) return;
   uploading.value = true; resumeMessage.value = '';
+  let uploadedStoragePath = '';
+  let profileSaved = false;
   try {
+    const previousResumeURL = resumeURL.value;
+    uploadedStoragePath = await uploadResumeToFirebase(selectedFile.value);
     const data = new FormData(); data.append('resume', selectedFile.value);
+    data.append('storage_path', uploadedStoragePath);
     const res = await apiFetch('/api/users/resume', { method: 'POST', body: data });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || 'Resume upload failed.');
-    resumeMessage.value = body.warning || `Resume uploaded; extracted ${body.extracted_chars || 0} characters.`;
+    profileSaved = true;
+    resumeURL.value = `firebase-storage://${uploadedStoragePath}`;
+    try { await deletePreviousFirebaseResume(previousResumeURL); } catch { /* Keep the newly saved resume if old-file cleanup fails. */ }
+    resumeMessage.value = body.warning || `Resume saved to Firebase Storage; extracted ${body.extracted_chars || 0} characters.`;
   } catch (e: any) { resumeMessage.value = e.message; }
-  finally { uploading.value = false; }
+  finally {
+    if (uploadedStoragePath && !profileSaved) await deleteFirebaseResumeUpload(uploadedStoragePath).catch(() => undefined);
+    uploading.value = false;
+  }
 };
 const addSource = async () => {
   sourceError.value = '';

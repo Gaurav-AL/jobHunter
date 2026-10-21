@@ -26,6 +26,8 @@ jobs:
       - name: Fetch recent resume-matched roles and email the digest
         env:
           JOB_EMAIL_TO: gauravchaudhary.hck@gmail.com
+          JOBHUNTER_DASHBOARD_URL: ${{ secrets.JOBHUNTER_DASHBOARD_URL }}
+          FIREBASE_WEB_API_KEY: ${{ vars.FIREBASE_WEB_API_KEY }}
           SMTP_HOST: smtp.gmail.com
           SMTP_PORT: '587'
           SMTP_USER: ${{ secrets.SMTP_USER }}

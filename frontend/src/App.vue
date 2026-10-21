@@ -15,26 +15,42 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { auth } from './firebase';
 import { signOut, onAuthStateChanged } from 'firebase/auth';
 
 const router = useRouter();
-const isAuthChecked = ref(false);
+const TEMPORARY_SESSION_MS = 2 * 60 * 60 * 1000;
+let temporarySessionTimer: ReturnType<typeof setTimeout> | undefined;
 
 onMounted(() => {
-  onAuthStateChanged(auth, (user) => {
-    isAuthChecked.value = true;
+  onAuthStateChanged(auth, async (user) => {
+    if (temporarySessionTimer) clearTimeout(temporarySessionTimer);
     if (!user) {
-      router.push('/login');
+      router.replace('/login');
+      return;
+    }
+    try {
+      const token = await user.getIdTokenResult();
+      if (token.signInProvider !== 'emailLink') return;
+      const authenticatedAt = Number(token.claims.auth_time) * 1000;
+      const remaining = authenticatedAt + TEMPORARY_SESSION_MS - Date.now();
+      if (!Number.isFinite(authenticatedAt) || remaining <= 0) {
+        await logout();
+        return;
+      }
+      temporarySessionTimer = setTimeout(() => { void logout(); }, remaining);
+    } catch {
+      await logout();
     }
   });
 });
 
 const logout = async () => {
+  if (temporarySessionTimer) clearTimeout(temporarySessionTimer);
   await signOut(auth);
-  router.push('/login');
+  await router.replace('/login');
 };
 </script>
 

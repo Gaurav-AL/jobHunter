@@ -18,6 +18,12 @@ frontend/dist/
 # Go build cache
 backend/vendor/
 
+# Firebase CLI local state
+.firebase/
+
+# Private, local-only job tracker workbook (never commit personal job data)
+/jobhunter_tracker.xlsx
+
 # IDE
 .vscode/settings.json
 .idea/

@@ -1,14 +1,18 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"backend/internal/repository"
-	"google.golang.org/genai"
 )
 
 // ApplicantExtraction contains factual resume fields. The prompt asks the model
@@ -37,30 +41,65 @@ func generateWithAICC(prompt string) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("AICC_KEY environment variable is not set")
 	}
-
-	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey: apiKey,
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("AICC_BASE_URL")), "/")
+	if baseURL == "" {
+		baseURL = "https://api.ai.cc/v1"
+	}
+	model := strings.TrimSpace(os.Getenv("AICC_MODEL"))
+	if model == "" {
+		model = "gpt-4o-mini"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"model": model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"temperature": 0.2,
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encode AICC request: %w", err)
 	}
-
-	resp, err := client.Models.GenerateContent(ctx, "gemini-2.5-flash", genai.Text(prompt), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create AICC request: %w", err)
 	}
-
-	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("no content generated")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 65 * time.Second}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("AICC request failed: %w", err)
 	}
-
-	return strings.TrimSpace(resp.Candidates[0].Content.Parts[0].Text), nil
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return "", fmt.Errorf("read AICC response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("AICC returned HTTP %d", resp.StatusCode)
+	}
+	var completion struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+		Choices []struct {
+			Message struct { Content string `json:"content"` } `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &completion); err != nil {
+		return "", fmt.Errorf("parse AICC response: %w", err)
+	}
+	if len(completion.Choices) == 0 || strings.TrimSpace(completion.Choices[0].Message.Content) == "" {
+		return "", fmt.Errorf("AICC returned no completion content")
+	}
+	log.Printf("AICC usage model=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d", model, completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
+	return strings.TrimSpace(completion.Choices[0].Message.Content), nil
 }
 
 // GenerateDraft uses AICC_KEY to generate a personalized job application draft.
 func GenerateDraft(resumeText, jobDescription string) (string, error) {
-	prompt := fmt.Sprintf(`You are an expert career coach. Based on the provided resume/profile and job description, draft a highly compelling and personalized cover letter or application message.
+	prompt := fmt.Sprintf(`You are preparing an editable application note. Use only facts explicitly present in the resume or user-confirmed answers. Never invent skills, employers, metrics, dates, eligibility, notice period, experience, salary, or answers to application questions. If a required detail is missing, omit it and leave it for the candidate to answer. Avoid claiming the candidate has already applied.
 	
 Resume/Profile and user-confirmed application answers (use notice period, experience, and expected CTC only if the application asks; include a project only if directly relevant or project experience is requested; do not force unrelated information):
 %s
@@ -68,7 +107,7 @@ Resume/Profile and user-confirmed application answers (use notice period, experi
 Job Description:
 %s
 
-Draft an application that highlights the best matching skills. Keep it professional, concise, and ready to send.`, resumeText, jobDescription)
+Write a concise, professional draft for the candidate to review and edit before submitting on the employer's website.`, resumeText, jobDescription)
 
 	return generateWithAICC(prompt)
 }

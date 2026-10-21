@@ -31,7 +31,7 @@
       <div class="glass-card stat-card">
         <span class="stat-label">Legacy drafts</span>
         <strong>{{ drafts.length }}</strong>
-        <small>{{ pendingDrafts }} from earlier runs; new runs do not create drafts.</small>
+        <small>{{ pendingDrafts }} ready for your review and completion.</small>
       </div>
       <div class="glass-card stat-card">
         <span class="stat-label">AICC</span>
@@ -93,7 +93,7 @@
           <form @submit.prevent="uploadResume" class="upload-box">
             <h4>Resume</h4>
             <p>Upload `.pdf`, `.txt`, `.md`, or `.docx` for extraction. Resume text is sent to the configured AICC/Gemini provider to extract profile fields. Scanned image resumes still need OCR.</p>
-            <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg" />
+            <input type="file" @change="handleFileUpload" class="input-field" accept=".pdf,.docx,.txt,.md" />
             <button type="submit" class="btn btn-success" :disabled="!selectedFile || uploadingResume">
               {{ uploadingResume ? 'Uploading...' : 'Upload Resume' }}
             </button>
@@ -190,7 +190,7 @@
       <div class="section-header">
         <div>
           <h3>Filtered matched jobs</h3>
-          <p>Greenhouse ranks first, followed by Lever and Ashby; aggregator feeds rank lower. Open a listing to apply directly. JobHunter does not submit applications or invent missing answers.</p>
+          <p>Greenhouse ranks first, followed by Lever and Ashby; aggregator feeds rank lower. Prepare a tailored resume and application note, then review and submit on the employer’s site.</p>
         </div>
       </div>
 
@@ -218,6 +218,9 @@
             <span :class="['badge', job.Status === 'applied' ? 'applied' : 'pending']">{{ job.Status === 'applied' ? 'Applied' : 'Not applied' }}</span>
             <button @click="setMatchStatus(job, job.Status === 'applied' ? 'not_applied' : 'applied')" type="button" :class="['btn', job.Status === 'applied' ? 'btn-secondary' : 'btn-success']" :disabled="updatingMatchId === job.ID || (!job.JobActive && job.Status !== 'applied')">
               {{ updatingMatchId === job.ID ? 'Saving...' : job.Status === 'applied' ? 'Undo applied' : 'Mark applied' }}
+            </button>
+            <button @click="prepareDraft(job)" type="button" class="btn btn-primary" :disabled="preparingDraftId === job.ID || !job.JobActive">
+              {{ preparingDraftId === job.ID ? 'Preparing…' : 'Prepare application' }}
             </button>
             <button v-if="job.SourceURL" @click="addSource(job.SourceURL, job.Company || job.SourceURL)" type="button" class="btn btn-secondary">Add Source</button>
           </div>
@@ -249,12 +252,12 @@
       <div class="section-header">
         <div>
           <h3>Your job drafts</h3>
-          <p>Legacy drafts from earlier runs remain available. New runs no longer create drafts; matched job cards link directly to the employer’s application page.</p>
+          <p>Review and edit each resume and application note, then submit it through the employer’s official application page. Preparation never submits an application.</p>
         </div>
       </div>
 
       <div v-if="drafts.length === 0" class="empty-state">
-        No legacy drafts. Use the matched job cards above to open the employer’s application page.
+        No application packs yet. Choose “Prepare application” on a matched job above.
       </div>
 
       <div class="draft-grid">
@@ -294,6 +297,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { apiFetch } from '../api';
 import { auth, authReady } from '../firebase';
+import { deleteFirebaseResumeUpload, deletePreviousFirebaseResume, uploadResumeToFirebase } from '../resumeStorage';
 
 const dashboard = ref<any>(null);
 const drafts = ref<any[]>([]);
@@ -311,9 +315,11 @@ const sourceQuery = ref('');
 const newSourceUrl = ref('');
 const newSourceName = ref('');
 const updatingMatchId = ref<number | null>(null);
+const preparingDraftId = ref<number | null>(null);
 
 const profile = reactive({
   email: '',
+  resume_url: '',
   profile_summary: '',
   target_roles: '',
   skills: '',
@@ -355,6 +361,7 @@ const firebaseParams = async () => {
 
 const applyProfile = (user: any) => {
   profile.email = user?.email || '';
+  profile.resume_url = user?.resume_url || '';
   profile.profile_summary = user?.profile_summary || '';
   profile.target_roles = user?.target_roles || '';
   profile.skills = user?.skills || '';
@@ -427,20 +434,31 @@ const uploadResume = async () => {
   if (!selectedFile.value) return;
   uploadingResume.value = true;
   resumeMessage.value = '';
+  let uploadedStoragePath = '';
+  let profileSaved = false;
   try {
+    const previousResumeURL = profile.resume_url;
+    uploadedStoragePath = await uploadResumeToFirebase(selectedFile.value);
     const params = await firebaseParams();
     const formData = new FormData();
     formData.append('resume', selectedFile.value);
     formData.append('firebase_uid', params.get('firebase_uid') || '');
+    formData.append('storage_path', uploadedStoragePath);
 
     const res = await apiFetch('/api/users/resume', { method: 'POST', body: formData });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || 'Resume upload failed.');
-    resumeMessage.value = body.warning || `Extracted ${body.extracted_chars || 0} characters into your profile signal.`;
+    profileSaved = true;
+    profile.resume_url = `firebase-storage://${uploadedStoragePath}`;
+    try { await deletePreviousFirebaseResume(previousResumeURL); } catch { /* Keep the newly saved resume if old-file cleanup fails. */ }
+    resumeMessage.value = body.warning || `Resume stored securely in Firebase Storage; extracted ${body.extracted_chars || 0} characters into your profile.`;
     if (body.applicant_profile) applyProfile(body.applicant_profile);
     if (body.profile_summary) profile.profile_summary = body.profile_summary;
     await refreshAll();
   } catch (error: any) {
+    if (uploadedStoragePath && !profileSaved) {
+      await deleteFirebaseResumeUpload(uploadedStoragePath).catch(() => undefined);
+    }
     resumeMessage.value = error.message;
   } finally {
     uploadingResume.value = false;
@@ -500,6 +518,25 @@ const updateStatus = async (id: number, status: string) => {
     body: JSON.stringify({ status }),
   });
   if (res.ok) await refreshAll();
+};
+
+const prepareDraft = async (job: any) => {
+  preparingDraftId.value = job.ID;
+  try {
+    const res = await apiFetch(`/api/jobs/matches/${job.ID}/draft`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not prepare application materials.');
+    await refreshAll();
+    const draftElement = document.querySelector('.drafts-section:last-of-type');
+    draftElement?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (!body.ai_cover_letter || !body.ai_tailored_resume) {
+      alert('AICC could not generate one or more AI materials. A factual fallback was saved; review it carefully before applying.');
+    }
+  } catch (error: any) {
+    alert(error.message || 'Could not prepare application materials.');
+  } finally {
+    preparingDraftId.value = null;
+  }
 };
 
 const setMatchStatus = async (job: any, status: string) => {
