@@ -81,6 +81,12 @@ const handleLogin = async () => {
       }
     } else {
       await signInWithEmailAndPassword(auth, email.value, password.value);
+      // Refresh 5-day active window on login
+      apiFetch('/api/public/touch-activity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.value.trim() }),
+      }).catch(() => {});
     }
     router.push('/');
   } catch (error: any) {
@@ -95,6 +101,13 @@ const sendTemporaryLink = async () => {
   try {
     // Save the email so the callback page can complete sign-in without prompting
     window.localStorage.setItem('jobhunterSignInEmail', trimmedEmail);
+
+    // Reset 5-day active window when user requests 2-hour link
+    apiFetch('/api/public/touch-activity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: trimmedEmail }),
+    }).catch(() => {});
 
     await sendSignInLinkToEmail(auth, trimmedEmail, {
       // The callback route handles the link and redirects straight to dashboard

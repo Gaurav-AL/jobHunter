@@ -38,6 +38,7 @@ type User struct {
 	WhatsAppNumber           string `gorm:"size:32"`                 // Reused field for verified SMS recipient
 	PhoneVerified            bool   `gorm:"not null;default:false"`
 	SMSOptIn                 bool   `gorm:"not null;default:false"`
+	LastActiveAt             *time.Time `gorm:"index"`               // Last interaction / login timestamp for 5-day activity window
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 	DeletedAt                gorm.DeletedAt `gorm:"index"`

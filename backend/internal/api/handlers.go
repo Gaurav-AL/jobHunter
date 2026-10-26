@@ -27,6 +27,7 @@ const jobHunterProjectHighlight = "JobHunter — personal project: Go/Gin backen
 
 func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	r.POST("/internal/scheduler/run", GitHubActionsAuth(), func(c *gin.Context) { RunScheduledRefresh(c, db) })
+	r.POST("/api/public/touch-activity", func(c *gin.Context) { TouchUserActivity(c, db) })
 
 	api := r.Group("/api")
 	api.Use(FirebaseAuth())
@@ -77,6 +78,12 @@ func resolveUserID(db *gorm.DB, userIDValue, firebaseUID string) (uint, error) {
 		return 0, fmt.Errorf("user not found for firebase_uid")
 	}
 
+	// Update last_active_at opportunistically (throttle to at most once per 30 minutes to reduce write overhead)
+	now := time.Now()
+	if user.LastActiveAt == nil || now.Sub(*user.LastActiveAt) > 30*time.Minute {
+		db.Model(&user).Update("last_active_at", now)
+	}
+
 	return user.ID, nil
 }
 
@@ -93,6 +100,27 @@ type RegisterRequest struct {
 	FirebaseUID string `json:"firebase_uid" binding:"required"`
 }
 
+type TouchActivityRequest struct {
+	Email string `json:"email" binding:"required"`
+}
+
+// TouchUserActivity records user activity (e.g., clicking 'Email me 2hr link') to reset their 5-day active window.
+func TouchUserActivity(c *gin.Context, db *gorm.DB) {
+	var req TouchActivityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+	cleanEmail := strings.TrimSpace(req.Email)
+	if cleanEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email cannot be empty"})
+		return
+	}
+	now := time.Now()
+	res := db.Model(&repository.User{}).Where("LOWER(email) = LOWER(?)", cleanEmail).Update("last_active_at", now)
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "updated": res.RowsAffected > 0})
+}
+
 func RegisterUser(c *gin.Context, db *gorm.DB) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -104,15 +132,18 @@ func RegisterUser(c *gin.Context, db *gorm.DB) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Firebase identity does not match the authenticated account"})
 		return
 	}
+	now := time.Now()
 	user := repository.User{
-		Email:       req.Email,
-		FirebaseUID: c.GetString("firebase_uid"),
+		Email:        req.Email,
+		FirebaseUID:  c.GetString("firebase_uid"),
+		LastActiveAt: &now,
 	}
 
 	if err := db.Where("firebase_uid = ?", req.FirebaseUID).FirstOrCreate(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create user"})
 		return
 	}
+	db.Model(&user).Update("last_active_at", now)
 
 	c.JSON(http.StatusOK, user)
 }
@@ -1093,7 +1124,9 @@ func RunScheduledRefresh(c *gin.Context, db *gorm.DB) {
 	}
 	var users []repository.User
 	var recipients []RecipientInfo
-	if err := db.Where("email != ''").Find(&users).Error; err == nil {
+	// Only deliver job digests to users active in the past 5 days (or newly registered within 5 days)
+	cutoff := time.Now().Add(-5 * 24 * time.Hour)
+	if err := db.Where("email != '' AND (last_active_at >= ? OR (last_active_at IS NULL AND created_at >= ?))", cutoff, cutoff).Find(&users).Error; err == nil {
 		for _, u := range users {
 			cleanEmail := strings.TrimSpace(u.Email)
 			if cleanEmail != "" {

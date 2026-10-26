@@ -104,12 +104,13 @@ func RunScrapingCycle(db *gorm.DB) {
 			}
 			discoveredJobs++
 			var users []repository.User
+			cutoff := time.Now().Add(-5 * 24 * time.Hour)
 			if source.IsGlobal || source.UserID == nil {
-				if err := db.Find(&users).Error; err != nil {
+				if err := db.Where("last_active_at >= ? OR (last_active_at IS NULL AND created_at >= ?)", cutoff, cutoff).Find(&users).Error; err != nil {
 					log.Printf("Failed to read user profiles: %v", err)
 					continue
 				}
-			} else if err := db.Where("id = ?", *source.UserID).Find(&users).Error; err != nil {
+			} else if err := db.Where("id = ? AND (last_active_at >= ? OR (last_active_at IS NULL AND created_at >= ?))", *source.UserID, cutoff, cutoff).Find(&users).Error; err != nil {
 				log.Printf("Failed to read source owner profile: %v", err)
 				continue
 			}

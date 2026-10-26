@@ -587,14 +587,15 @@ def main() -> int:
                 if email and "@" in email and not any(x["email"].lower() == email.lower() for x in recipients_list):
                     recipients_list.append(r)
 
-        # Fallback to DEFAULT_JOB_EMAIL or JOB_EMAIL_TO if no registered users found in DB
+        # Fallback to DEFAULT_JOB_EMAIL or JOB_EMAIL_TO if no active registered users found in DB
         fallback_email = os.getenv("DEFAULT_JOB_EMAIL", "").strip() or os.getenv("JOB_EMAIL_TO", "").strip()
         if not recipients_list:
             if fallback_email:
-                print(f"No active users returned from database; using fallback recipient: {fallback_email}")
+                print(f"No active users in 5-day window returned from database; using fallback recipient: {fallback_email}")
                 recipients_list = [{"email": fallback_email}]
             else:
-                raise RuntimeError("No recipients found in database and neither DEFAULT_JOB_EMAIL nor JOB_EMAIL_TO is configured.")
+                print("No active candidates in the 5-day activity window and no fallback configured; skipping email dispatch to preserve SMTP quota.")
+                return 0
 
         print(f"Targeting {len(recipients_list)} digest recipient(s): {[r['email'] for r in recipients_list]}")
 

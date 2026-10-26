@@ -1,6 +1,8 @@
 # Daily resume-matched email digest
 
-The GitHub Actions workflow runs twice daily at 09:00 and 18:00 India Standard Time (03:30 and 12:30 UTC) and can also be started manually from the Actions tab. It uses persistent GitHub Actions caching (`.cache/seen_jobs.json`) to exclude previously emailed listings, ensuring each morning and evening digest delivers only newly posted opportunities. It searches Google Jobs through SerpApi for India-wide roles when configured, adds India-eligible remote roles from no-key feeds, and dynamically emails a personalized dashboard plus matching jobs to all registered user emails in the database (or the `DEFAULT_JOB_EMAIL` secret if no database users are found). Each user's digest matches their specific target skills and roles.
+The GitHub Actions workflow runs twice daily at 09:00 and 18:00 India Standard Time (03:30 and 12:30 UTC) and can also be started manually from the Actions tab. It uses persistent GitHub Actions caching (`.cache/seen_jobs.json`) to exclude previously emailed listings, ensuring each morning and evening digest delivers only newly posted opportunities. It searches Google Jobs through SerpApi for India-wide roles when configured, adds India-eligible remote roles from no-key feeds, and dynamically emails a personalized dashboard plus matching jobs to active registered users in the database (or the `DEFAULT_JOB_EMAIL` secret if no database users are found).
+
+To protect Gmail sender reputation, prevent spam flagging, and avoid wasteful compute on dormant accounts, email digests and AI draft packs are only generated for users who were active within the last 5 days (users who logged in, registered, or clicked "Email me 2hr link" within 5 days). Clicking "Email me 2hr link" or logging into the dashboard automatically resets the 5-day active window.
 
 ## Required repository secrets
 
