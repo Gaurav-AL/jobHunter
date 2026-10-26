@@ -196,12 +196,94 @@
         </div>
       </div>
 
+      <!-- Quick Application Autofill Kit -->
+      <div class="autofill-drawer" :class="{ open: showAutofillKit }">
+        <div class="autofill-header" @click="showAutofillKit = !showAutofillKit">
+          <span>📋 <strong>Application Autofill Kit</strong> (1-click copy answers while filling employer ATS forms)</span>
+          <button type="button" class="btn btn-sm btn-ghost">{{ showAutofillKit ? 'Hide ▲' : 'Show Kit ▼' }}</button>
+        </div>
+        <div v-if="showAutofillKit" class="autofill-chips-grid">
+          <div class="autofill-chip" v-if="applicantFullName" @click="copyToClipboard(applicantFullName)">
+            <small>Full Name</small>
+            <span>{{ applicantFullName }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.email" @click="copyToClipboard(profile.email)">
+            <small>Email</small>
+            <span>{{ profile.email }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.applicant_phone" @click="copyToClipboard(profile.applicant_phone)">
+            <small>Phone</small>
+            <span>{{ profile.applicant_phone }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.applicant_linkedin" @click="copyToClipboard(profile.applicant_linkedin)">
+            <small>LinkedIn</small>
+            <span>{{ profile.applicant_linkedin }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.applicant_github" @click="copyToClipboard(profile.applicant_github)">
+            <small>GitHub</small>
+            <span>{{ profile.applicant_github }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.applicant_website" @click="copyToClipboard(profile.applicant_website)">
+            <small>Portfolio</small>
+            <span>{{ profile.applicant_website }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.notice_period" @click="copyToClipboard(profile.notice_period)">
+            <small>Notice Period</small>
+            <span>{{ profile.notice_period }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.applicant_years_experience" @click="copyToClipboard(profile.applicant_years_experience)">
+            <small>Experience</small>
+            <span>{{ profile.applicant_years_experience }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.salary_expectation" @click="copyToClipboard(profile.salary_expectation)">
+            <small>Salary Expected</small>
+            <span>{{ profile.salary_expectation }} 📋</span>
+          </div>
+          <div class="autofill-chip" v-if="profile.applicant_projects" @click="copyToClipboard(profile.applicant_projects)">
+            <small>Projects</small>
+            <span>Click to copy highlights 📋</span>
+          </div>
+          <div class="autofill-chip chip-all" @click="copyFullAutofillKit">
+            <small>Full Profile</small>
+            <span>Copy All Answers 🚀</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Search & Filter Bar -->
+      <div class="jobs-filter-bar">
+        <div class="search-input-wrap">
+          <input
+            v-model="jobSearchQuery"
+            type="text"
+            class="input-field search-input"
+            placeholder="🔍 Search role, company, skill (e.g. Go, Remote, Engineer)..."
+          />
+        </div>
+        <div class="filter-controls-wrap">
+          <select v-model="jobStatusFilter" class="input-field select-filter">
+            <option value="all">All statuses ({{ matchedJobs.length }})</option>
+            <option value="not_applied">Unapplied only ({{ notAppliedCount }})</option>
+            <option value="applied">Applied ({{ appliedCount }})</option>
+          </select>
+          <select v-model="jobScoreFilter" class="input-field select-filter">
+            <option :value="0">All Match Scores</option>
+            <option :value="50">Score ≥ 50%</option>
+            <option :value="70">Score ≥ 70% (Top Fit)</option>
+            <option :value="80">Score ≥ 80% (Best Fit)</option>
+          </select>
+        </div>
+      </div>
+
       <div v-if="matchedJobs.length === 0" class="empty-state">
         No matched jobs yet. Upload/extract your resume, add sources, then click Run Hunt Now.
       </div>
+      <div v-else-if="filteredMatchedJobs.length === 0" class="empty-state">
+        No jobs match your current search/filter. <button class="btn btn-sm btn-ghost" @click="jobSearchQuery = ''; jobStatusFilter = 'all'; jobScoreFilter = 0">Reset filters</button>
+      </div>
 
       <div class="match-grid">
-        <article v-for="job in matchedJobs" :key="job.ID" class="match-card">
+        <article v-for="job in filteredMatchedJobs" :key="job.ID" class="match-card">
           <div>
             <div class="draft-topline">
               <h4>{{ job.JobTitle || `Job ID: ${job.JobID}` }}</h4>
@@ -355,6 +437,10 @@ const newSourceName = ref('');
 const updatingMatchId = ref<number | null>(null);
 const preparingDraftId = ref<number | null>(null);
 const expandedDraftJobId = ref<number | null>(null);
+const showAutofillKit = ref(false);
+const jobSearchQuery = ref('');
+const jobStatusFilter = ref<'all' | 'not_applied' | 'applied'>('all');
+const jobScoreFilter = ref<number>(0);
 
 const profile = reactive({
   email: '',
@@ -390,6 +476,53 @@ const chartStyle = computed(() => {
   const applied = matchedJobs.value.length ? appliedCount.value / matchedJobs.value.length * 100 : 0;
   return { background: `conic-gradient(#6ee7b7 0 ${applied}%, #c4b5fd ${applied}% 100%)` };
 });
+
+const applicantFullName = computed(() => {
+  return `${profile.applicant_first_name || ''} ${profile.applicant_last_name || ''}`.trim();
+});
+
+const filteredMatchedJobs = computed(() => {
+  let list = matchedJobs.value;
+
+  if (jobStatusFilter.value === 'applied') {
+    list = list.filter((j: any) => j.Status === 'applied');
+  } else if (jobStatusFilter.value === 'not_applied') {
+    list = list.filter((j: any) => j.Status !== 'applied');
+  }
+
+  if (jobScoreFilter.value > 0) {
+    list = list.filter((j: any) => (j.MatchScore || 0) >= jobScoreFilter.value);
+  }
+
+  const q = jobSearchQuery.value.trim().toLowerCase();
+  if (q) {
+    list = list.filter((j: any) => {
+      const title = (j.JobTitle || '').toLowerCase();
+      const comp = (j.Company || '').toLowerCase();
+      const loc = (j.Location || '').toLowerCase();
+      const skills = (String(j.MatchedSkills || '') + ' ' + String(j.RequiredSkills || '')).toLowerCase();
+      return title.includes(q) || comp.includes(q) || loc.includes(q) || skills.includes(q);
+    });
+  }
+
+  return list;
+});
+
+const copyFullAutofillKit = async () => {
+  const parts = [
+    applicantFullName.value ? `Name: ${applicantFullName.value}` : '',
+    profile.email ? `Email: ${profile.email}` : '',
+    profile.applicant_phone ? `Phone: ${profile.applicant_phone}` : '',
+    profile.applicant_linkedin ? `LinkedIn: ${profile.applicant_linkedin}` : '',
+    profile.applicant_github ? `GitHub: ${profile.applicant_github}` : '',
+    profile.applicant_website ? `Portfolio: ${profile.applicant_website}` : '',
+    profile.notice_period ? `Notice Period: ${profile.notice_period}` : '',
+    profile.applicant_years_experience ? `Experience: ${profile.applicant_years_experience}` : '',
+    profile.salary_expectation ? `Expected Compensation: ${profile.salary_expectation}` : '',
+    profile.applicant_projects ? `Project Highlights:\n${profile.applicant_projects}` : '',
+  ].filter(Boolean).join('\n');
+  await copyToClipboard(parts);
+};
 
 const firebaseParams = async () => {
   await authReady;
@@ -976,5 +1109,86 @@ button:disabled {
   margin-top: 0.5rem;
   font-size: 0.85rem;
   color: var(--text-secondary);
+}
+
+.autofill-drawer {
+  margin-bottom: 1.25rem;
+  padding: 0.85rem;
+  border-radius: 0.6rem;
+  background: rgba(30, 41, 59, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+.autofill-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+.autofill-chips-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+}
+.autofill-chip {
+  display: flex;
+  flex-direction: column;
+  padding: 0.45rem 0.75rem;
+  border-radius: 0.45rem;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+.autofill-chip:hover {
+  background: rgba(79, 70, 229, 0.25);
+  border-color: #818cf8;
+}
+.autofill-chip small {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+.autofill-chip span {
+  font-size: 0.86rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.autofill-chip.chip-all {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: #34d399;
+}
+.autofill-chip.chip-all span {
+  color: #34d399;
+  font-weight: 700;
+}
+
+.jobs-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  align-items: center;
+}
+.search-input-wrap {
+  flex: 1 1 300px;
+}
+.search-input {
+  margin-bottom: 0;
+  width: 100%;
+}
+.filter-controls-wrap {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.select-filter {
+  margin-bottom: 0;
+  padding: 0.55rem 0.85rem;
+  background: rgba(15, 23, 42, 0.7);
 }
 </style>
