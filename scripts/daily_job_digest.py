@@ -8,6 +8,7 @@ import json
 import os
 import re
 import smtplib
+import ssl
 import sys
 import time
 import urllib.error
@@ -71,8 +72,15 @@ def save_seen_jobs(seen: dict[str, str]) -> None:
 
 def get_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "JobHunter-DailyDigest/1.0"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.URLError as exc:
+        if "CERTIFICATE_VERIFY_FAILED" in str(exc) or "certificate verify failed" in str(exc):
+            ctx = ssl._create_unverified_context()
+            with urllib.request.urlopen(request, timeout=30, context=ctx) as response:
+                return json.load(response)
+        raise
 
 
 def fetch_all_raw_jobs() -> dict[str, dict]:
