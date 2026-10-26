@@ -75,9 +75,9 @@ def get_json(url: str) -> dict:
         return json.load(response)
 
 
-def search_jobs(seen_jobs: dict[str, str] | None = None) -> tuple[list[dict], int, int]:
+def fetch_all_raw_jobs() -> dict[str, dict]:
+    """Fetch current raw postings from Google Jobs, Himalayas, Jobicy, RemoteOK, and Arbeitnow."""
     found: dict[str, dict] = {}
-    seen_map = seen_jobs or {}
 
     def keep(raw: dict, source: str, key: str, title: str, company: str,
              location: str, url: str, description: str, posted: str | None,
@@ -114,7 +114,6 @@ def search_jobs(seen_jobs: dict[str, str] | None = None) -> tuple[list[dict], in
                          raw.get("description", ""), extensions.get("posted_at"),
                          extensions.get("salary", ""))
             except Exception as exc:
-                # Do not print the request URL: it contains the API key.
                 detail = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
                 print(f"SerpApi query '{query}' failed ({detail}).", file=sys.stderr)
 
@@ -150,7 +149,6 @@ def search_jobs(seen_jobs: dict[str, str] | None = None) -> tuple[list[dict], in
         print(f"Himalayas feed failed: {exc}", file=sys.stderr)
 
     # RemoteOK — worldwide remote, no API key required.
-    # The first element of the array is a legal notice object, so we skip non-dict entries.
     try:
         items = get_json("https://remoteok.com/api")
         for raw in items:
@@ -209,6 +207,20 @@ def search_jobs(seen_jobs: dict[str, str] | None = None) -> tuple[list[dict], in
         except Exception as exc:
             print(f"Jobvetta feed failed: {exc}", file=sys.stderr)
 
+    return found
+
+
+def rank_jobs_for_profile(
+    found: dict[str, dict],
+    seen_jobs: dict[str, str] | None = None,
+    profile: dict | None = None,
+) -> tuple[list[dict], int]:
+    """Score raw listings against a specific candidate's skills and roles."""
+    active_profile = profile or PROFILE
+    skills_list = active_profile.get("skills", PROFILE["skills"])
+    roles_list = active_profile.get("roles", PROFILE["roles"])
+    seen_map = seen_jobs or {}
+
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
     candidates = []
     skipped_previously_sent = 0
@@ -232,14 +244,14 @@ def search_jobs(seen_jobs: dict[str, str] | None = None) -> tuple[list[dict], in
         text = f"{title} {description}".lower()
         if not any(term in title.lower() for term in ("engineer", "developer", "sre", "programmer")):
             continue
-        # Focus on roles aligned with the user's roughly 2.2 years' experience.
+        # Focus on roles aligned with roughly 1-4 years' experience.
         if any(term in title.lower() for term in ("senior", "staff", "principal", "director", "engineering manager", "head of", "vice president", "vp ", "lead engineer")):
             continue
-        skill_matches = [skill for skill in PROFILE["skills"] if re.search(r"(?<![a-z0-9])" + re.escape(skill) + r"(?![a-z0-9])", text)]
+        skill_matches = [skill for skill in skills_list if re.search(r"(?<![a-z0-9])" + re.escape(skill) + r"(?![a-z0-9])", text)]
         if not skill_matches:
             continue
         title_lower = title.lower()
-        role_matches = sum(role in title_lower for role in PROFILE["roles"])
+        role_matches = sum(role in title_lower for role in roles_list)
         level = str((raw.get("raw") or {}).get("jobLevel", "")).lower()
         level_fit = 2 if any(term in title_lower or term in level for term in ("associate", "junior", "entry", "mid", "intermediate")) else 0
         age_days = max(0, (dt.datetime.now(dt.timezone.utc) - created).days)
@@ -263,7 +275,13 @@ def search_jobs(seen_jobs: dict[str, str] | None = None) -> tuple[list[dict], in
         candidates.append((score, created, job, skill_matches))
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     jobs = [format_job(item) for item in diversify_by_company(candidates, limit=100)]
-    return jobs, len(found), skipped_previously_sent
+    return jobs, skipped_previously_sent
+
+
+def search_jobs(seen_jobs: dict[str, str] | None = None, profile: dict | None = None) -> tuple[list[dict], int, int]:
+    found = fetch_all_raw_jobs()
+    jobs, skipped = rank_jobs_for_profile(found, seen_jobs, profile)
+    return jobs, len(found), skipped
 
 
 def diversify_by_company(candidates: list[tuple], limit: int) -> list[tuple]:
@@ -385,14 +403,14 @@ def salary_text(job: dict) -> str:
     return "Not listed"
 
 
-def refresh_dashboard_sources() -> str:
-    """Refresh saved ATS sources in the production database before composing the digest."""
+def refresh_dashboard_sources() -> tuple[str, list[dict]]:
+    """Refresh saved ATS sources in the production database and fetch registered users."""
     dashboard_url = os.getenv("JOBHUNTER_DASHBOARD_URL", "").strip().rstrip("/")
     request_url = os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL", "").strip()
     request_token = os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "").strip()
     parsed = urllib.parse.urlparse(dashboard_url)
     if parsed.scheme != "https" or not parsed.netloc or not request_url or not request_token:
-        return "not configured"
+        return "not configured", []
     try:
         token_request = urllib.request.Request(
             request_url + "&audience=" + urllib.parse.quote(dashboard_url + "/internal/scheduler/run", safe=""),
@@ -406,24 +424,48 @@ def refresh_dashboard_sources() -> str:
         )
         with urllib.request.urlopen(request, timeout=300) as response:
             data = json.loads(response.read(65536).decode("utf-8"))
-        return str(data.get("message") or "completed")
+        msg = str(data.get("message") or "completed")
+        recipients = data.get("recipients") or []
+        return msg, recipients
     except Exception as exc:
         print(f"Saved-source refresh failed ({type(exc).__name__}); continuing with external job feeds.", file=sys.stderr)
-        return "failed; see workflow logs"
+        return "failed; see workflow logs", []
 
 
-def send_firebase_access_link() -> bool:
+def build_profile_for_recipient(user_info: dict) -> dict:
+    """Build a search profile from user database fields or fall back to default profile."""
+    profile = {
+        "years_experience": PROFILE.get("years_experience", 2.0),
+        "roles": list(PROFILE.get("roles", [])),
+        "skills": list(PROFILE.get("skills", [])),
+    }
+    raw_skills = user_info.get("skills")
+    if raw_skills and isinstance(raw_skills, str) and raw_skills.strip():
+        user_skills = [s.strip().lower() for s in re.split(r"[,;\n]+", raw_skills) if s.strip()]
+        if user_skills:
+            profile["skills"] = user_skills
+    raw_roles = user_info.get("target_roles")
+    if raw_roles and isinstance(raw_roles, str) and raw_roles.strip():
+        user_roles = [r.strip().lower() for r in re.split(r"[,;\n]+", raw_roles) if r.strip()]
+        if user_roles:
+            profile["roles"] = user_roles
+    return profile
+
+
+def send_firebase_access_link(recipient: str) -> bool:
     """Ask Firebase Auth to email today's one-time sign-in link (session lasts two hours)."""
     api_key = os.getenv("FIREBASE_WEB_API_KEY", "").strip()
     dashboard_url = os.getenv("JOBHUNTER_DASHBOARD_URL", "").strip().rstrip("/")
-    recipient = os.getenv("JOB_EMAIL_TO", "gauravchaudhary.hck@gmail.com").strip()
+    clean_recipient = recipient.strip()
+    if not clean_recipient:
+        return False
     parsed = urllib.parse.urlparse(dashboard_url)
     if not api_key or parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
         print("Firebase access link not requested: set FIREBASE_WEB_API_KEY and a public HTTPS JOBHUNTER_DASHBOARD_URL.", file=sys.stderr)
         return False
     action = {
         "requestType": "EMAIL_SIGNIN",
-        "email": recipient,
+        "email": clean_recipient,
         # /auth/callback handles the link and redirects straight to the dashboard
         "continueUrl": dashboard_url + "/auth/callback",
         "canHandleCodeInApp": True,
@@ -441,25 +483,34 @@ def send_firebase_access_link() -> bool:
         return True
     except urllib.error.HTTPError as exc:
         # Never print the request URL, because it contains the Firebase web API key.
-        print(f"Firebase access link request failed (HTTP {exc.code}). Check Email link sign-in and the authorized domain.", file=sys.stderr)
+        print(f"Firebase access link request failed for {clean_recipient} (HTTP {exc.code}). Check Email link sign-in and the authorized domain.", file=sys.stderr)
     except Exception as exc:
-        print(f"Firebase access link request failed ({type(exc).__name__}).", file=sys.stderr)
+        print(f"Firebase access link request failed for {clean_recipient} ({type(exc).__name__}).", file=sys.stderr)
     return False
 
 
-def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool, source_refresh: str = "not configured", skipped_previously_sent: int = 0) -> None:
-    recipient = os.getenv("JOB_EMAIL_TO", "gauravchaudhary.hck@gmail.com").strip()
+def send_email(
+    jobs: list[dict],
+    total_fetched: int,
+    access_link_requested: bool,
+    recipient: str,
+    source_refresh: str = "not configured",
+    skipped_previously_sent: int = 0,
+) -> None:
     sender = os.getenv("SMTP_USER", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
     host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
     port = int(os.getenv("SMTP_PORT", "587"))
+    target = recipient.strip()
+    if not target:
+        raise ValueError("Cannot send email without a valid recipient address.")
     if not sender or not password:
         raise RuntimeError("Configure SMTP_USER and SMTP_PASSWORD GitHub Actions secrets to enable email delivery.")
     today = dt.datetime.now(dt.timezone.utc).strftime("%d %b %Y")
     message = EmailMessage()
     message["Subject"] = f"JobHunter: {len(jobs)} fresh resume-matched software jobs — {today}"
     message["From"] = sender
-    message["To"] = recipient
+    message["To"] = target
     dashboard_url = os.getenv("JOBHUNTER_DASHBOARD_URL", "").strip()
     parsed_dashboard_url = urllib.parse.urlparse(dashboard_url)
     if parsed_dashboard_url.scheme not in {"https", "http"} or not parsed_dashboard_url.netloc or parsed_dashboard_url.username or parsed_dashboard_url.password:
@@ -525,39 +576,79 @@ def html_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: s
 
 def main() -> int:
     try:
-        source_refresh = refresh_dashboard_sources()
+        source_refresh, db_recipients = refresh_dashboard_sources()
         print(f"Saved JobHunter sources refresh: {source_refresh}")
+
+        # Determine recipients list from database users
+        recipients_list = []
+        if db_recipients:
+            for r in db_recipients:
+                email = str(r.get("email", "")).strip()
+                if email and "@" in email and not any(x["email"].lower() == email.lower() for x in recipients_list):
+                    recipients_list.append(r)
+
+        # Fallback to DEFAULT_JOB_EMAIL or JOB_EMAIL_TO if no registered users found in DB
+        fallback_email = os.getenv("DEFAULT_JOB_EMAIL", "").strip() or os.getenv("JOB_EMAIL_TO", "").strip()
+        if not recipients_list:
+            if fallback_email:
+                print(f"No active users returned from database; using fallback recipient: {fallback_email}")
+                recipients_list = [{"email": fallback_email}]
+            else:
+                raise RuntimeError("No recipients found in database and neither DEFAULT_JOB_EMAIL nor JOB_EMAIL_TO is configured.")
+
+        print(f"Targeting {len(recipients_list)} digest recipient(s): {[r['email'] for r in recipients_list]}")
+
         seen_jobs = load_seen_jobs()
         print(f"Loaded {len(seen_jobs)} previously seen job keys from persistent cache.")
-        jobs, total_fetched, skipped_previously_sent = search_jobs(seen_jobs)
-        print(f"Search results: {total_fetched} total feed listings, {len(jobs)} fresh new matches, {skipped_previously_sent} previously sent jobs excluded.")
-        
-        # If all fresh jobs were filtered out because no new postings appeared yet,
-        # fallback to top recent jobs so the digest email remains useful.
-        if not jobs and total_fetched > 0 and skipped_previously_sent > 0:
-            print("No brand new listings appeared since last run; retrieving top recent active listings as fallback.")
-            jobs, _, _ = search_jobs(seen_jobs=None)
 
-        if not jobs:
-            if not total_fetched:
-                raise RuntimeError("No listings were returned by configured job sources; configure SERPAPI_API_KEY for India-wide Google Jobs search.")
-            jobs = []
+        # Fetch raw postings once from all sources
+        raw_found = fetch_all_raw_jobs()
+        total_fetched = len(raw_found)
+        print(f"Fetched {total_fetched} raw listings across all active job sources.")
 
-        access_link_requested = send_firebase_access_link()
-        send_email(jobs, total_fetched, access_link_requested, source_refresh, skipped_previously_sent)
-        
+        if total_fetched == 0:
+            raise RuntimeError("No listings were returned by configured job sources; configure SERPAPI_API_KEY for India-wide Google Jobs search.")
+
+        all_sent_jobs: list[dict] = []
+
+        # Iterate over each recipient to personalize ranking and dispatch email
+        for user_info in recipients_list:
+            user_email = user_info["email"].strip()
+            user_profile = build_profile_for_recipient(user_info)
+            jobs, skipped_previously_sent = rank_jobs_for_profile(raw_found, seen_jobs=seen_jobs, profile=user_profile)
+
+            # If all jobs were filtered out because no new postings appeared yet,
+            # fallback to top recent active listings so the digest remains useful.
+            if not jobs and total_fetched > 0 and skipped_previously_sent > 0:
+                print(f"No fresh un-emailed listings for {user_email}; providing top recent active listings as fallback.")
+                jobs, _ = rank_jobs_for_profile(raw_found, seen_jobs=None, profile=user_profile)
+
+            print(f"Candidate {user_email}: {len(jobs)} matches (filtered {skipped_previously_sent} prior).")
+
+            access_link_requested = send_firebase_access_link(user_email)
+            send_email(
+                jobs=jobs,
+                total_fetched=total_fetched,
+                access_link_requested=access_link_requested,
+                recipient=user_email,
+                source_refresh=source_refresh,
+                skipped_previously_sent=skipped_previously_sent,
+            )
+            print(f"Successfully sent job digest to {user_email} ({len(jobs)} listings).")
+            all_sent_jobs.extend(jobs)
+
         # Record newly sent jobs into persistent cache
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
-        for j in jobs:
+        for j in all_sent_jobs:
             if j.get("url"):
                 seen_jobs[j["url"]] = now_iso
             if j.get("id"):
                 seen_jobs[str(j["id"])] = now_iso
-                seen_jobs[f"{j.get('source', '')}:{j['id']}"] = now_iso
+                if j.get("source"):
+                    seen_jobs[f"{j['source']}:{j['id']}"] = now_iso
         save_seen_jobs(seen_jobs)
         print(f"Updated seen jobs cache: {len(seen_jobs)} total records stored.")
 
-        print(f"Fetched {total_fetched} unique listings; {len(jobs)} fresh matches sent to {os.getenv('JOB_EMAIL_TO', 'gauravchaudhary.hck@gmail.com')}.")
         return 0
     except Exception as exc:
         print(f"JobHunter daily digest failed: {exc}", file=sys.stderr)

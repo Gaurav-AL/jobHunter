@@ -1084,7 +1084,34 @@ func extractDocxText(filePath string) (string, error) {
 // RunScheduledRefresh is called by the private GitHub Actions cron after source refresh.
 func RunScheduledRefresh(c *gin.Context, db *gorm.DB) {
 	scheduler.RunScrapingCycle(db)
-	c.JSON(http.StatusOK, gin.H{"message": scheduler.GetStatus().LastRunMessage, "last_run_at": scheduler.GetStatus().LastRunAt})
+
+	type RecipientInfo struct {
+		Email       string `json:"email"`
+		Skills      string `json:"skills"`
+		TargetRoles string `json:"target_roles"`
+		Location    string `json:"location"`
+	}
+	var users []repository.User
+	var recipients []RecipientInfo
+	if err := db.Where("email != ''").Find(&users).Error; err == nil {
+		for _, u := range users {
+			cleanEmail := strings.TrimSpace(u.Email)
+			if cleanEmail != "" {
+				recipients = append(recipients, RecipientInfo{
+					Email:       cleanEmail,
+					Skills:      u.Skills,
+					TargetRoles: u.TargetRoles,
+					Location:    u.Location,
+				})
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     scheduler.GetStatus().LastRunMessage,
+		"last_run_at": scheduler.GetStatus().LastRunAt,
+		"recipients":  recipients,
+	})
 }
 
 
