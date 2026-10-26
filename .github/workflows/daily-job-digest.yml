@@ -2,7 +2,7 @@ name: Daily JobHunter email
 
 on:
   schedule:
-    - cron: '30 12 * * *' # 18:00 Asia/Kolkata (daily)
+    - cron: '30 3,12 * * *' # 09:00 & 18:00 Asia/Kolkata (twice daily)
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Cache previously sent jobs
+        uses: actions/cache@v4
+        with:
+          path: .cache/seen_jobs.json
+          key: seen-jobs-${{ github.run_id }}
+          restore-keys: |
+            seen-jobs-
       - name: Fetch recent resume-matched roles and email the digest
         env:
           JOB_EMAIL_TO: gauravchaudhary.hck@gmail.com

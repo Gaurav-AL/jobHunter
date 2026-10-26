@@ -31,3 +31,4 @@ backend/vendor/
 # Python
 __pycache__/
 *.py[cod]
+.cache/

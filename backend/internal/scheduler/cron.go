@@ -126,13 +126,15 @@ func RunScrapingCycle(db *gorm.DB) {
 					log.Printf("Failed to save job match: %v", result.Error)
 					continue
 				}
-				if result.RowsAffected == 0 {
+				isNewMatch := result.RowsAffected > 0
+				if !isNewMatch {
 					db.Model(&matchRecord).Updates(map[string]any{"match_score": match.Score, "match_reason": match.Reason, "matched_skills": skillNames, "required_skills": requiredSkills})
+				} else {
+					matchedJobs++
+					// Mark this match for auto-draft generation only if it is a brand new match
+					freshMatches[matchKey{user.ID, existing.ID}] = true
+					sendJobNotification(db, user, source, existing)
 				}
-				matchedJobs++
-				// Mark this match for auto-draft generation below.
-				freshMatches[matchKey{user.ID, existing.ID}] = true
-				sendJobNotification(db, user, source, existing)
 			}
 		}
 		// Only a successful ATS response can close jobs that disappeared from the public board.

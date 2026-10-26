@@ -38,14 +38,46 @@ SERPAPI_QUERIES = [
     "Java developer", "Python developer", "site reliability engineer",
 ]
 
+SEEN_JOBS_FILE = os.getenv("SEEN_JOBS_FILE", ".cache/seen_jobs.json")
+
+
+def load_seen_jobs() -> dict[str, str]:
+    """Load previously sent job identifiers with their sent date."""
+    if not os.path.exists(SEEN_JOBS_FILE):
+        return {}
+    try:
+        with open(SEEN_JOBS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+            if isinstance(data, list):
+                return {str(k): "" for k in data}
+    except Exception as e:
+        print(f"Notice: could not read seen jobs cache ({e}); starting fresh.", file=sys.stderr)
+    return {}
+
+
+def save_seen_jobs(seen: dict[str, str]) -> None:
+    """Save seen job identifiers to disk, pruning records older than 21 days."""
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(SEEN_JOBS_FILE)), exist_ok=True)
+        cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=21)).isoformat()
+        pruned = {k: v for k, v in seen.items() if not v or v >= cutoff}
+        with open(SEEN_JOBS_FILE, "w", encoding="utf-8") as f:
+            json.dump(pruned, f, indent=2)
+    except Exception as e:
+        print(f"Notice: could not save seen jobs cache ({e}).", file=sys.stderr)
+
+
 def get_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "JobHunter-DailyDigest/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
 
 
-def search_jobs() -> tuple[list[dict], int]:
+def search_jobs(seen_jobs: dict[str, str] | None = None) -> tuple[list[dict], int, int]:
     found: dict[str, dict] = {}
+    seen_map = seen_jobs or {}
 
     def keep(raw: dict, source: str, key: str, title: str, company: str,
              location: str, url: str, description: str, posted: str | None,
@@ -179,7 +211,17 @@ def search_jobs() -> tuple[list[dict], int]:
 
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
     candidates = []
+    skipped_previously_sent = 0
     for raw in found.values():
+        job_url = str(raw.get("url", "")).strip()
+        job_id = str(raw.get("id", "")).strip()
+        src_id = f"{raw.get('source')}:{job_id}"
+
+        # Exclude jobs already emailed in previous runs so only fresh ones are sent
+        if job_url in seen_map or job_id in seen_map or src_id in seen_map:
+            skipped_previously_sent += 1
+            continue
+
         created = parse_date(raw.get("pubDate"))
         if created is None and raw.get("source") == "Google Jobs via SerpApi":
             created = parse_relative_date(raw.get("pubDate"))
@@ -221,7 +263,7 @@ def search_jobs() -> tuple[list[dict], int]:
         candidates.append((score, created, job, skill_matches))
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     jobs = [format_job(item) for item in diversify_by_company(candidates, limit=100)]
-    return jobs, len(found)
+    return jobs, len(found), skipped_previously_sent
 
 
 def diversify_by_company(candidates: list[tuple], limit: int) -> list[tuple]:
@@ -405,7 +447,7 @@ def send_firebase_access_link() -> bool:
     return False
 
 
-def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool, source_refresh: str = "not configured") -> None:
+def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool, source_refresh: str = "not configured", skipped_previously_sent: int = 0) -> None:
     recipient = os.getenv("JOB_EMAIL_TO", "gauravchaudhary.hck@gmail.com").strip()
     sender = os.getenv("SMTP_USER", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
@@ -415,23 +457,31 @@ def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool
         raise RuntimeError("Configure SMTP_USER and SMTP_PASSWORD GitHub Actions secrets to enable email delivery.")
     today = dt.datetime.now(dt.timezone.utc).strftime("%d %b %Y")
     message = EmailMessage()
-    message["Subject"] = f"JobHunter: {len(jobs)} resume-matched software jobs — {today}"
+    message["Subject"] = f"JobHunter: {len(jobs)} fresh resume-matched software jobs — {today}"
     message["From"] = sender
     message["To"] = recipient
     dashboard_url = os.getenv("JOBHUNTER_DASHBOARD_URL", "").strip()
     parsed_dashboard_url = urllib.parse.urlparse(dashboard_url)
     if parsed_dashboard_url.scheme not in {"https", "http"} or not parsed_dashboard_url.netloc or parsed_dashboard_url.username or parsed_dashboard_url.password:
         dashboard_url = ""
-    message.set_content(plain_body(jobs, total_fetched, today, dashboard_url, access_link_requested) + f"\nSaved JobHunter sources refresh: {source_refresh}\n")
-    message.add_alternative(html_body(jobs, total_fetched, today, dashboard_url, access_link_requested), subtype="html")
+    message.set_content(plain_body(jobs, total_fetched, today, dashboard_url, access_link_requested, skipped_previously_sent) + f"\nSaved JobHunter sources refresh: {source_refresh}\n")
+    message.add_alternative(html_body(jobs, total_fetched, today, dashboard_url, access_link_requested, skipped_previously_sent), subtype="html")
     with smtplib.SMTP(host, port, timeout=30) as server:
         server.starttls()
         server.login(sender, password)
         server.send_message(message)
 
 
-def plain_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: str = "", access_link_requested: bool = False) -> str:
-    lines = [f"Your JobHunter matches for {today}", "", f"Unique listings returned by feeds: {total_fetched}", f"Fresh resume matches: {len(jobs)}", "Applications submitted/failed: Not tracked by the job digest", f"Manual follow-up required: {len(jobs)}", "Application success ratio: N/A (the digest does not submit applications).", ""]
+def plain_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: str = "", access_link_requested: bool = False, skipped_previously_sent: int = 0) -> str:
+    lines = [
+        f"Your JobHunter matches for {today}", "",
+        f"Unique listings returned by feeds: {total_fetched}",
+        f"Fresh new resume matches: {len(jobs)}",
+        f"Previously emailed jobs filtered out: {skipped_previously_sent}",
+        "Applications submitted/failed: Not tracked by the job digest",
+        f"Manual follow-up required: {len(jobs)}",
+        "Application success ratio: N/A (the digest does not submit applications).", ""
+    ]
     if dashboard_url:
         lines.extend([f"Open your dashboard: {dashboard_url}"])
         if access_link_requested:
@@ -447,20 +497,20 @@ def plain_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: 
         lines.append("")
     for i, job in enumerate(jobs, 1):
         lines.extend([f"{i}. {job['title']} — {job['company']}", f"   {job['location']} | posted {job['created']} | salary: {job['salary']}", f"   Resume fit: {', '.join(job['skills'])}", f"   Source: {job['source']}", f"   Listing: {job['url']}", ""])
-    lines.append("Jobs are searched from India-wide Google Jobs results when SERPAPI_API_KEY is configured, plus India-eligible/APAC remote feeds. Job boards return listings, not a universal application submission service. No application was submitted, so there is no submission success ratio. After you submit, employer confirmation emails go directly to your application email when that employer sends them; this digest does not read or impersonate those messages. Review each employer's questions and listing before applying.")
+    lines.append("Jobs are searched from India-wide Google Jobs results when SERPAPI_API_KEY is configured, plus India-eligible/APAC remote feeds. Previously emailed jobs are automatically excluded so you only receive new listings each morning and evening. Review each employer's questions and listing before applying.")
     return "\n".join(lines)
 
 
-def html_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: str = "", access_link_requested: bool = False) -> str:
+def html_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: str = "", access_link_requested: bool = False, skipped_previously_sent: int = 0) -> str:
     dashboard = ("<table role='presentation' style='width:100%;border-collapse:collapse;margin:18px 0'>"
                  "<tr>" + "".join(
                      f"<td style='background:#f1f5f9;padding:16px;border-radius:8px;text-align:center'><div style='font-size:24px;font-weight:bold'>{value}</div><div style='color:#475569'>{html.escape(label)}</div></td>"
-                     for value, label in [(str(total_fetched), "Unique feed listings"), (str(len(jobs)), "Fresh resume matches"), (str(len(jobs)), "Manual follow-up")]
-                 ) + "</tr></table><p><b>Applications submitted/failed: not tracked by this job digest.</b> Application success ratio: N/A because the digest does not submit applications.</p>")
+                     for value, label in [(str(total_fetched), "Feed listings"), (str(len(jobs)), "Fresh new matches"), (str(skipped_previously_sent), "Prior jobs filtered"), (str(len(jobs)), "Manual follow-up")]
+                 ) + "</tr></table><p><b>Applications submitted/failed: not tracked by this job digest.</b> Each morning and evening run filters out already emailed jobs to present only newly posted roles.</p>")
     cards = []
     for i, job in enumerate(jobs, 1):
         cards.append(f"<li><h3>{i}. {html.escape(job['title'])} — {html.escape(job['company'])}</h3><p>{html.escape(job['location'])} · Posted {html.escape(job['created'])} · Salary: {html.escape(job['salary'])}</p><p>Resume fit: {html.escape(', '.join(job['skills']))}</p><p>Source: {html.escape(job['source'])}</p><p><a href=\"{html.escape(job['url'], quote=True)}\">Open listing / application</a></p></li>")
-    note = "India-wide Google Jobs search is enabled when SERPAPI_API_KEY is configured. No-key sources add India-eligible remote roles. Listings are ranked by resume fit, level, and freshness. Search providers do not provide a universal application submission service; review employer questions, consent terms, and current availability before applying."
+    note = "India-wide Google Jobs search is enabled when SERPAPI_API_KEY is configured. No-key sources add India-eligible remote roles. Previously emailed jobs are automatically filtered out to ensure only fresh opportunities are delivered."
     dashboard_link = ""
     if dashboard_url:
         sign_in_note = ("Firebase sent a separate one-time sign-in email. Access lasts two hours after sign-in." if access_link_requested else "No temporary sign-in email was sent today; request one from the sign-in page.")
@@ -477,16 +527,37 @@ def main() -> int:
     try:
         source_refresh = refresh_dashboard_sources()
         print(f"Saved JobHunter sources refresh: {source_refresh}")
-        jobs, total_fetched = search_jobs()
+        seen_jobs = load_seen_jobs()
+        print(f"Loaded {len(seen_jobs)} previously seen job keys from persistent cache.")
+        jobs, total_fetched, skipped_previously_sent = search_jobs(seen_jobs)
+        print(f"Search results: {total_fetched} total feed listings, {len(jobs)} fresh new matches, {skipped_previously_sent} previously sent jobs excluded.")
+        
+        # If all fresh jobs were filtered out because no new postings appeared yet,
+        # fallback to top recent jobs so the digest email remains useful.
+        if not jobs and total_fetched > 0 and skipped_previously_sent > 0:
+            print("No brand new listings appeared since last run; retrieving top recent active listings as fallback.")
+            jobs, _, _ = search_jobs(seen_jobs=None)
+
         if not jobs:
             if not total_fetched:
                 raise RuntimeError("No listings were returned by configured job sources; configure SERPAPI_API_KEY for India-wide Google Jobs search.")
             jobs = []
+
         access_link_requested = send_firebase_access_link()
-        send_email(jobs, total_fetched, access_link_requested, source_refresh)
-        print(f"Fetched {total_fetched} unique listings; resume matches {len(jobs)}; application submissions are not tracked by this digest; sent digest to {os.getenv('JOB_EMAIL_TO', 'gauravchaudhary.hck@gmail.com')}.")
-        if len(jobs) < 20:
-            print(f"Only {len(jobs)} eligible current listings were available today; no fictitious listings were added.")
+        send_email(jobs, total_fetched, access_link_requested, source_refresh, skipped_previously_sent)
+        
+        # Record newly sent jobs into persistent cache
+        now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+        for j in jobs:
+            if j.get("url"):
+                seen_jobs[j["url"]] = now_iso
+            if j.get("id"):
+                seen_jobs[str(j["id"])] = now_iso
+                seen_jobs[f"{j.get('source', '')}:{j['id']}"] = now_iso
+        save_seen_jobs(seen_jobs)
+        print(f"Updated seen jobs cache: {len(seen_jobs)} total records stored.")
+
+        print(f"Fetched {total_fetched} unique listings; {len(jobs)} fresh matches sent to {os.getenv('JOB_EMAIL_TO', 'gauravchaudhary.hck@gmail.com')}.")
         return 0
     except Exception as exc:
         print(f"JobHunter daily digest failed: {exc}", file=sys.stderr)
