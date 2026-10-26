@@ -117,6 +117,44 @@ def search_jobs() -> tuple[list[dict], int]:
     except Exception as exc:
         print(f"Himalayas feed failed: {exc}", file=sys.stderr)
 
+    # RemoteOK — worldwide remote, no API key required.
+    # The first element of the array is a legal notice object, so we skip non-dict entries.
+    try:
+        items = get_json("https://remoteok.com/api")
+        for raw in items:
+            if not isinstance(raw, dict) or not raw.get("id"):
+                continue
+            job_url = raw.get("url") or (
+                "https://remoteok.com/remote-jobs/" + raw["slug"] if raw.get("slug") else ""
+            )
+            tags = raw.get("tags") or []
+            description = raw.get("description") or (", ".join(tags) if tags else "")
+            keep(raw, "RemoteOK", str(raw.get("id", "")), raw.get("position", ""),
+                 raw.get("company", ""), raw.get("location") or "Worldwide remote",
+                 job_url, description, raw.get("date"), "")
+    except Exception as exc:
+        print(f"RemoteOK feed failed: {exc}", file=sys.stderr)
+
+    # Arbeitnow — Europe/remote jobs, no API key required.
+    try:
+        payload = get_json("https://www.arbeitnow.com/api/job-board-api")
+        for raw in payload.get("data", []):
+            if not raw.get("slug") or not raw.get("title"):
+                continue
+            job_url = raw.get("url") or ("https://www.arbeitnow.com/jobs/" + raw["slug"])
+            tags = raw.get("tags") or []
+            description = raw.get("description") or (", ".join(tags) if tags else "")
+            created_at = raw.get("created_at")
+            posted = (
+                dt.datetime.fromtimestamp(created_at, dt.timezone.utc).isoformat()
+                if isinstance(created_at, (int, float)) else None
+            )
+            keep(raw, "Arbeitnow", str(raw.get("slug", "")), raw.get("title", ""),
+                 raw.get("company_name", ""), raw.get("location") or ("Remote" if raw.get("remote") else ""),
+                 job_url, description, posted, "")
+    except Exception as exc:
+        print(f"Arbeitnow feed failed: {exc}", file=sys.stderr)
+
     # Optional India-only feed. A free Jobvetta key can be stored as a GitHub secret.
     jobvetta_key = os.getenv("JOBVETTA_API_KEY", "").strip()
     if jobvetta_key:
@@ -305,6 +343,33 @@ def salary_text(job: dict) -> str:
     return "Not listed"
 
 
+def refresh_dashboard_sources() -> str:
+    """Refresh saved ATS sources in the production database before composing the digest."""
+    dashboard_url = os.getenv("JOBHUNTER_DASHBOARD_URL", "").strip().rstrip("/")
+    request_url = os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL", "").strip()
+    request_token = os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "").strip()
+    parsed = urllib.parse.urlparse(dashboard_url)
+    if parsed.scheme != "https" or not parsed.netloc or not request_url or not request_token:
+        return "not configured"
+    try:
+        token_request = urllib.request.Request(
+            request_url + "&audience=" + urllib.parse.quote(dashboard_url + "/internal/scheduler/run", safe=""),
+            headers={"Authorization": "Bearer " + request_token},
+        )
+        with urllib.request.urlopen(token_request, timeout=20) as response:
+            token = json.loads(response.read(65536).decode("utf-8"))["value"]
+        request = urllib.request.Request(
+            dashboard_url + "/internal/scheduler/run", data=b"{}",
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + token}, method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=300) as response:
+            data = json.loads(response.read(65536).decode("utf-8"))
+        return str(data.get("message") or "completed")
+    except Exception as exc:
+        print(f"Saved-source refresh failed ({type(exc).__name__}); continuing with external job feeds.", file=sys.stderr)
+        return "failed; see workflow logs"
+
+
 def send_firebase_access_link() -> bool:
     """Ask Firebase Auth to email today's one-time sign-in link (session lasts two hours)."""
     api_key = os.getenv("FIREBASE_WEB_API_KEY", "").strip()
@@ -317,7 +382,8 @@ def send_firebase_access_link() -> bool:
     action = {
         "requestType": "EMAIL_SIGNIN",
         "email": recipient,
-        "continueUrl": dashboard_url + "/login",
+        # /auth/callback handles the link and redirects straight to the dashboard
+        "continueUrl": dashboard_url + "/auth/callback",
         "canHandleCodeInApp": True,
     }
     request = urllib.request.Request(
@@ -339,7 +405,7 @@ def send_firebase_access_link() -> bool:
     return False
 
 
-def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool) -> None:
+def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool, source_refresh: str = "not configured") -> None:
     recipient = os.getenv("JOB_EMAIL_TO", "gauravchaudhary.hck@gmail.com").strip()
     sender = os.getenv("SMTP_USER", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
@@ -356,7 +422,7 @@ def send_email(jobs: list[dict], total_fetched: int, access_link_requested: bool
     parsed_dashboard_url = urllib.parse.urlparse(dashboard_url)
     if parsed_dashboard_url.scheme not in {"https", "http"} or not parsed_dashboard_url.netloc or parsed_dashboard_url.username or parsed_dashboard_url.password:
         dashboard_url = ""
-    message.set_content(plain_body(jobs, total_fetched, today, dashboard_url, access_link_requested))
+    message.set_content(plain_body(jobs, total_fetched, today, dashboard_url, access_link_requested) + f"\nSaved JobHunter sources refresh: {source_refresh}\n")
     message.add_alternative(html_body(jobs, total_fetched, today, dashboard_url, access_link_requested), subtype="html")
     with smtplib.SMTP(host, port, timeout=30) as server:
         server.starttls()
@@ -409,13 +475,15 @@ def html_body(jobs: list[dict], total_fetched: int, today: str, dashboard_url: s
 
 def main() -> int:
     try:
+        source_refresh = refresh_dashboard_sources()
+        print(f"Saved JobHunter sources refresh: {source_refresh}")
         jobs, total_fetched = search_jobs()
         if not jobs:
             if not total_fetched:
                 raise RuntimeError("No listings were returned by configured job sources; configure SERPAPI_API_KEY for India-wide Google Jobs search.")
             jobs = []
         access_link_requested = send_firebase_access_link()
-        send_email(jobs, total_fetched, access_link_requested)
+        send_email(jobs, total_fetched, access_link_requested, source_refresh)
         print(f"Fetched {total_fetched} unique listings; resume matches {len(jobs)}; application submissions are not tracked by this digest; sent digest to {os.getenv('JOB_EMAIL_TO', 'gauravchaudhary.hck@gmail.com')}.")
         if len(jobs) < 20:
             print(f"Only {len(jobs)} eligible current listings were available today; no fictitious listings were added.")

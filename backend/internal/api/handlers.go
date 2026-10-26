@@ -23,9 +23,11 @@ import (
 	"gorm.io/gorm"
 )
 
-const jobHunterProjectHighlight = "JobHunter — personal project: Go/Gin backend and Vue.js frontend with Docker Compose and MySQL; Firebase-authenticated user accounts; public Greenhouse, Lever, Ashby, Himalayas, and Jobicy job discovery; resume-based job matching and scheduled email/SMS notifications. Review project details and metrics before using in an application."
+const jobHunterProjectHighlight = "JobHunter — personal project: Go/Gin backend and Vue.js frontend with Docker Compose and MySQL; Firebase-authenticated user accounts; public Greenhouse, Lever, Ashby, Himalayas, Jobicy, RemoteOK, and Arbeitnow job discovery; resume-based job matching and scheduled email/SMS notifications. Review project details and metrics before using in an application."
 
 func SetupRoutes(r *gin.Engine, db *gorm.DB) {
+	r.POST("/internal/scheduler/run", GitHubActionsAuth(), func(c *gin.Context) { RunScheduledRefresh(c, db) })
+
 	api := r.Group("/api")
 	api.Use(FirebaseAuth())
 
@@ -49,6 +51,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 
 	// Drafts
 	api.GET("/drafts", func(c *gin.Context) { GetDrafts(c, db) })
+	api.PATCH("/drafts/:id", func(c *gin.Context) { UpdateDraftContent(c, db) })
 	api.POST("/drafts/:id/status", func(c *gin.Context) { UpdateDraftStatus(c, db) })
 	api.GET("/jobs/matches", func(c *gin.Context) { GetMatchedJobs(c, db) })
 	api.POST("/jobs/matches/:id/draft", func(c *gin.Context) { PrepareJobDraft(c, db) })
@@ -594,7 +597,7 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 	}
 
 	var matches []repository.JobMatch
-	if err := db.Where("user_id = ?", userID).Order("match_score DESC, created_at DESC").Find(&matches).Error; err != nil {
+	if err := db.Where("user_id = ?", userID).Joins("JOIN jobs ON jobs.id = job_matches.job_id").Order("CASE WHEN jobs.provider = 'greenhouse' THEN 0 WHEN jobs.provider IN ('lever', 'ashby') THEN 1 WHEN jobs.provider = 'jobicy' THEN 2 WHEN jobs.provider = 'remoteok' THEN 3 WHEN jobs.provider = 'arbeitnow' THEN 4 WHEN jobs.provider = 'himalayas' THEN 5 ELSE 6 END, job_matches.match_score DESC, job_matches.created_at DESC").Find(&matches).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch matched jobs"})
 		return
 	}
@@ -854,7 +857,7 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 	db.Model(&repository.Job{}).Count(&jobsCount)
 	var matchedJobs []MatchedJobView
 	var matches []repository.JobMatch
-	db.Where("user_id = ?", userID).Order("match_score DESC, created_at DESC").Limit(20).Find(&matches)
+	db.Where("user_id = ?", userID).Joins("JOIN jobs ON jobs.id = job_matches.job_id").Order("CASE WHEN jobs.provider = 'greenhouse' THEN 0 WHEN jobs.provider IN ('lever', 'ashby') THEN 1 WHEN jobs.provider = 'jobicy' THEN 2 WHEN jobs.provider = 'remoteok' THEN 3 WHEN jobs.provider = 'arbeitnow' THEN 4 WHEN jobs.provider = 'himalayas' THEN 5 ELSE 6 END, job_matches.match_score DESC, job_matches.created_at DESC").Limit(20).Find(&matches)
 	for _, match := range matches {
 		var job repository.Job
 		var source repository.AllowedSource
@@ -1075,4 +1078,24 @@ func extractDocxText(filePath string) (string, error) {
 		return strings.TrimSpace(collapsed), nil
 	}
 	return "", fmt.Errorf("word/document.xml not found")
+}
+
+
+// RunScheduledRefresh is called by the private GitHub Actions cron after source refresh.
+func RunScheduledRefresh(c *gin.Context, db *gorm.DB) {
+	scheduler.RunScrapingCycle(db)
+	c.JSON(http.StatusOK, gin.H{"message": scheduler.GetStatus().LastRunMessage, "last_run_at": scheduler.GetStatus().LastRunAt})
+}
+
+
+func UpdateDraftContent(c *gin.Context, db *gorm.DB) {
+	userID, err := authenticatedUserID(c, db)
+	if err != nil { c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()}); return }
+	var req struct { DraftContent string `json:"DraftContent"`; TailoredResume string `json:"TailoredResume"` }
+	if err := c.ShouldBindJSON(&req); err != nil { c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()}); return }
+	if len(req.DraftContent) > 100000 || len(req.TailoredResume) > 100000 { c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Draft text must be 100,000 characters or less"}); return }
+	result := db.Model(&repository.JobDraft{}).Where("id = ? AND user_id = ?", c.Param("id"), userID).Updates(map[string]any{"draft_content": req.DraftContent, "tailored_resume": req.TailoredResume})
+	if result.Error != nil { c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not save draft"}); return }
+	if result.RowsAffected == 0 { c.JSON(http.StatusNotFound, gin.H{"error": "Draft not found"}); return }
+	c.JSON(http.StatusOK, gin.H{"message": "Draft saved"})
 }

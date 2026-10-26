@@ -111,10 +111,12 @@
 
           <div class="upload-box">
             <h4>Public job feeds</h4>
-          <p>Himalayas filters to India; Jobicy adds APAC remote roles. Your profile location boosts India-based jobs in matching.</p>
-            <div class="inline-form">
+          <p>Himalayas filters to India; Jobicy adds APAC remote roles; RemoteOK and Arbeitnow cover worldwide remote positions. Your profile location boosts India-based jobs in matching.</p>
+            <div class="inline-form feed-buttons">
               <button type="button" class="btn btn-secondary" @click="addSource('https://himalayas.app/jobs/api/search?country=IN&q=software%20engineer', 'Himalayas · India')">Add Himalayas India feed</button>
               <button type="button" class="btn btn-secondary" @click="addSource('https://jobicy.com/api/v2/remote-jobs?geo=apac&count=200', 'Jobicy · APAC remote')">Add Jobicy APAC remote feed</button>
+              <button type="button" class="btn btn-secondary" @click="addSource('https://remoteok.com/api', 'RemoteOK · Worldwide remote')">Add RemoteOK feed</button>
+              <button type="button" class="btn btn-secondary" @click="addSource('https://www.arbeitnow.com/api/job-board-api', 'Arbeitnow · Europe/Remote')">Add Arbeitnow feed</button>
             </div>
           </div>
 
@@ -214,13 +216,49 @@
             <p v-if="job.MatchedSkills" class="skill-hits"><strong>Your matching skills:</strong> {{ job.MatchedSkills }}</p>
             <small v-if="job.LastSeenAt">Confirmed on source board: {{ new Date(job.LastSeenAt).toLocaleString() }}</small>
           </div>
+
+          <!-- Inline pre-prepared draft viewer -->
+          <div v-if="draftForJob(job.JobID)" class="inline-draft-panel">
+            <div class="inline-draft-header">
+              <span class="draft-ready-badge">✅ Draft ready</span>
+              <button type="button" class="btn btn-sm btn-ghost" @click="toggleDraftPanel(job.JobID)">
+                {{ expandedDraftJobId === job.JobID ? 'Collapse ▲' : 'View Draft ▼' }}
+              </button>
+            </div>
+            <template v-if="expandedDraftJobId === job.JobID">
+              <details class="draft-details" open>
+                <summary>Application message</summary>
+                <textarea v-model="draftForJob(job.JobID).DraftContent" class="input-field textarea draft-editor" placeholder="Application message"></textarea>
+                <div class="draft-copy-row">
+                  <button type="button" class="btn btn-sm btn-secondary" @click="copyToClipboard(draftForJob(job.JobID).DraftContent)">Copy message</button>
+                  <button type="button" class="btn btn-sm btn-primary" @click="saveDraft(draftForJob(job.JobID))">Save edits</button>
+                </div>
+              </details>
+              <details class="draft-details">
+                <summary>Tailored resume</summary>
+                <textarea v-model="draftForJob(job.JobID).TailoredResume" class="input-field textarea draft-editor" placeholder="Tailored resume"></textarea>
+                <div class="draft-copy-row">
+                  <button type="button" class="btn btn-sm btn-secondary" @click="copyToClipboard(draftForJob(job.JobID).TailoredResume)">Copy resume</button>
+                  <button type="button" class="btn btn-sm btn-secondary" @click="downloadResume(draftForJob(job.JobID))">Download (.txt)</button>
+                  <button type="button" class="btn btn-sm btn-primary" @click="saveDraft(draftForJob(job.JobID))">Save edits</button>
+                </div>
+              </details>
+              <div class="draft-submit-row" v-if="draftForJob(job.JobID).Status === 'pending'">
+                <a v-if="job.ApplyURL || job.JobURL" :href="job.ApplyURL || job.JobURL" target="_blank" rel="noreferrer" class="btn btn-success">Open employer page to submit →</a>
+                <button type="button" class="btn btn-primary" @click="markDraftApplied(draftForJob(job.JobID))">I submitted the application</button>
+                <button type="button" class="btn btn-danger" @click="updateStatus(draftForJob(job.JobID).ID, 'rejected')">Dismiss</button>
+              </div>
+              <p v-else class="draft-status-note">Draft status: <strong>{{ draftForJob(job.JobID).Status }}</strong></p>
+            </template>
+          </div>
+
           <div class="match-actions">
             <span :class="['badge', job.Status === 'applied' ? 'applied' : 'pending']">{{ job.Status === 'applied' ? 'Applied' : 'Not applied' }}</span>
             <button @click="setMatchStatus(job, job.Status === 'applied' ? 'not_applied' : 'applied')" type="button" :class="['btn', job.Status === 'applied' ? 'btn-secondary' : 'btn-success']" :disabled="updatingMatchId === job.ID || (!job.JobActive && job.Status !== 'applied')">
               {{ updatingMatchId === job.ID ? 'Saving...' : job.Status === 'applied' ? 'Undo applied' : 'Mark applied' }}
             </button>
             <button @click="prepareDraft(job)" type="button" class="btn btn-primary" :disabled="preparingDraftId === job.ID || !job.JobActive">
-              {{ preparingDraftId === job.ID ? 'Preparing…' : 'Prepare application' }}
+              {{ preparingDraftId === job.ID ? 'Preparing…' : draftForJob(job.JobID) ? 'Re-prepare' : 'Prepare application' }}
             </button>
             <button v-if="job.SourceURL" @click="addSource(job.SourceURL, job.Company || job.SourceURL)" type="button" class="btn btn-secondary">Add Source</button>
           </div>
@@ -274,12 +312,12 @@
             <small v-if="draft.LastSeenAt">Last confirmed listed: {{ new Date(draft.LastSeenAt).toLocaleString() }}</small>
             <details class="draft-details">
               <summary>Review tailored resume</summary>
-              <pre class="resume-preview">{{ draft.TailoredResume || 'Resume draft is not available. Upload a text-based resume and run discovery again.' }}</pre>
-              <button v-if="draft.TailoredResume" @click="downloadResume(draft)" type="button" class="btn btn-secondary">Download resume draft (.txt)</button>
+              <textarea v-model="draft.TailoredResume" class="input-field textarea draft-editor" placeholder="Tailored resume draft"></textarea>
+              <div class="actions"><button v-if="draft.TailoredResume" @click="downloadResume(draft)" type="button" class="btn btn-secondary">Download resume draft (.txt)</button><button @click="saveDraft(draft)" type="button" class="btn btn-primary">Save edits</button></div>
             </details>
             <details class="draft-details">
               <summary>Review application message</summary>
-              <p class="draft-content">{{ draft.DraftContent }}</p>
+              <textarea v-model="draft.DraftContent" class="input-field textarea draft-editor" placeholder="Application message"></textarea>
             </details>
             <p v-if="!draft.JobActive" class="closed-job">This listing is no longer confirmed active. Verify it on the employer site.</p>
           </div>
@@ -316,6 +354,7 @@ const newSourceUrl = ref('');
 const newSourceName = ref('');
 const updatingMatchId = ref<number | null>(null);
 const preparingDraftId = ref<number | null>(null);
+const expandedDraftJobId = ref<number | null>(null);
 
 const profile = reactive({
   email: '',
@@ -511,6 +550,12 @@ const runHuntNow = async () => {
   }
 };
 
+const saveDraft = async (draft: any) => {
+  const res = await apiFetch(`/api/drafts/${draft.ID}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ DraftContent: draft.DraftContent, TailoredResume: draft.TailoredResume }) });
+  if (!res.ok) { alert('Failed to save draft edits.'); return; }
+  alert('Draft saved. Review it before applying on the employer site.');
+};
+
 const updateStatus = async (id: number, status: string) => {
   const res = await apiFetch(`/api/drafts/${id}/status`, {
     method: 'POST',
@@ -554,6 +599,48 @@ const setMatchStatus = async (job: any, status: string) => {
     updatingMatchId.value = null;
   }
 };
+
+// ── Draft panel helpers ──────────────────────────────────────────────────────
+
+/** Return the pre-prepared draft (if any) for a given job ID. */
+const draftForJob = (jobId: number) => drafts.value.find((d: any) => d.JobID === jobId) ?? null;
+
+/** Toggle the inline draft viewer for a matched-job card. */
+const toggleDraftPanel = (jobId: number) => {
+  expandedDraftJobId.value = expandedDraftJobId.value === jobId ? null : jobId;
+};
+
+/** Copy text to clipboard with a transient user-facing confirmation. */
+const copyToClipboard = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    alert('Copied to clipboard ✓');
+  } catch {
+    alert('Could not access clipboard — please select and copy manually.');
+  }
+};
+
+/**
+ * Mark a draft as "applied" from the inline panel.
+ * Mirrors the existing updateStatus() call used in the drafts section.
+ */
+const markDraftApplied = async (draft: any) => {
+  if (!draft?.ID) return;
+  const res = await apiFetch(`/api/drafts/${draft.ID}/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'applied' }),
+  });
+  if (res.ok) {
+    draft.Status = 'applied';
+    await refreshAll();
+  } else {
+    const body = await res.json().catch(() => ({}));
+    alert(body.error || 'Could not mark as applied.');
+  }
+};
+
+// ────────────────────────────────────────────────────────────────────────────
 
 const exportJobs = async () => {
   try {
@@ -662,6 +749,10 @@ dt {
 }
 .inline-form .input-field {
   margin-bottom: 0;
+}
+.feed-buttons {
+  flex-wrap: wrap;
+  gap: 0.6rem;
 }
 .btn-secondary {
   background: rgba(148, 163, 184, 0.16);
@@ -838,4 +929,52 @@ button:disabled {
 .applicant-fields label { display: grid; gap: .35rem; }
 .applicant-fields .projects-field { grid-column: 1 / -1; }
 @media (max-width: 700px) { .applicant-fields { grid-template-columns: 1fr; } }
+
+.inline-draft-panel {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(110, 231, 183, 0.3);
+}
+.inline-draft-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.draft-ready-badge {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #34d399;
+}
+.btn-sm {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--accent-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.draft-copy-row,
+.draft-submit-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.draft-editor {
+  margin-top: 0.5rem;
+  min-height: 100px;
+  font-size: 0.88rem;
+}
+.draft-status-note {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
 </style>

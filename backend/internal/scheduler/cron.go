@@ -62,11 +62,15 @@ func RunScrapingCycle(db *gorm.DB) {
 	statusMu.Unlock()
 	discoveredJobs, matchedJobs := 0, 0
 	var sources []repository.AllowedSource
-	if err := db.Order("CASE WHEN provider = 'greenhouse' THEN 0 WHEN provider IN ('lever', 'ashby') THEN 1 WHEN provider IN ('himalayas', 'jobicy') THEN 2 ELSE 3 END").Find(&sources).Error; err != nil {
+	if err := db.Order("CASE WHEN provider = 'greenhouse' THEN 0 WHEN provider IN ('lever', 'ashby') THEN 1 WHEN provider IN ('himalayas', 'jobicy') THEN 2 WHEN provider IN ('remoteok', 'arbeitnow') THEN 3 ELSE 4 END").Find(&sources).Error; err != nil {
 		log.Printf("Error fetching sources: %v", err)
 		updateStatus("Failed to fetch sources.")
 		return
 	}
+	// Track which matches were created/updated this cycle so we can auto-draft them.
+	type matchKey struct{ userID, jobID uint }
+	freshMatches := map[matchKey]bool{}
+
 	for _, source := range sources {
 		jobs, err := scraper.ScrapeJobs(source.URL)
 		if err != nil {
@@ -126,6 +130,8 @@ func RunScrapingCycle(db *gorm.DB) {
 					db.Model(&matchRecord).Updates(map[string]any{"match_score": match.Score, "match_reason": match.Reason, "matched_skills": skillNames, "required_skills": requiredSkills})
 				}
 				matchedJobs++
+				// Mark this match for auto-draft generation below.
+				freshMatches[matchKey{user.ID, existing.ID}] = true
 				sendJobNotification(db, user, source, existing)
 			}
 		}
@@ -138,7 +144,71 @@ func RunScrapingCycle(db *gorm.DB) {
 			log.Printf("Failed to close stale jobs for source %d: %v", source.ID, err)
 		}
 	}
-	updateStatus(logMessage(discoveredJobs, matchedJobs))
+
+	// Auto-generate application packs for fresh top matches so the dashboard
+	// is ready for review the moment the user opens it via the email link.
+	autoDraftCount := 0
+	for key := range freshMatches {
+		var user repository.User
+		if err := db.First(&user, key.userID).Error; err != nil || strings.TrimSpace(user.ResumeText) == "" {
+			continue // Skip if no resume — draft would be a fallback only
+		}
+		var job repository.Job
+		if err := db.First(&job, key.jobID).Error; err != nil || !job.IsActive {
+			continue
+		}
+		// Only draft if an apply link is available.
+		if job.ApplyURL == "" && job.URL == "" {
+			continue
+		}
+		// Skip if a draft already exists (don't overwrite user edits).
+		var existingDraft repository.JobDraft
+		if db.Where("user_id = ? AND job_id = ?", key.userID, key.jobID).First(&existingDraft).Error == nil {
+			continue
+		}
+		profileFacts := "Notice period: " + user.NoticePeriod + "\nExperience: " + user.ApplicantYearsExperience + "\nExpected compensation: " + user.SalaryExpectation + "\nApplicant projects: " + user.ApplicantProjects
+		resumeForDraft := user.ResumeText + "\n\n" + profileFacts
+		jobContext := "Title: " + job.Title + "\nCompany: " + job.Company + "\nLocation: " + job.Location + "\n\nDescription:\n" + job.Description
+
+		cover, coverErr := services.GenerateDraft(resumeForDraft, jobContext)
+		if coverErr != nil {
+			cover = buildFallbackMessage(user, job)
+		}
+		tailored, resumeErr := services.GenerateTailoredResume(user.ResumeText, job.Title, job.Description)
+		if resumeErr != nil {
+			tailored = services.BuildRoleFocusedResume(user, job.Title, job.Description)
+		}
+
+		draft := repository.JobDraft{
+			UserID:         key.userID,
+			JobID:          key.jobID,
+			DraftContent:   cover,
+			TailoredResume: tailored,
+			Status:         "pending",
+		}
+		if err := db.Create(&draft).Error; err != nil {
+			log.Printf("Auto-draft creation failed for user %d job %d: %v", key.userID, key.jobID, err)
+			continue
+		}
+		autoDraftCount++
+		log.Printf("Auto-drafted application pack for user %d job %d (%s)", key.userID, key.jobID, job.Title)
+	}
+
+	msg := logMessage(discoveredJobs, matchedJobs)
+	if autoDraftCount > 0 {
+		msg += " Auto-prepared " + strconv.Itoa(autoDraftCount) + " application pack(s) ready for your review."
+	}
+	updateStatus(msg)
+}
+
+func buildFallbackMessage(user repository.User, job repository.Job) string {
+	var sb strings.Builder
+	sb.WriteString("Application note — " + job.Title + " at " + job.Company + "\n\n")
+	sb.WriteString("I am interested in this role and would welcome the opportunity to discuss how my background aligns with the position. The attached resume contains my verified experience and skills.\n\n")
+	if user.ApplicantFirstName != "" {
+		sb.WriteString("Regards,\n" + user.ApplicantFirstName + " " + user.ApplicantLastName)
+	}
+	return sb.String()
 }
 
 func logMessage(discoveredJobs, matchedJobs int) string {

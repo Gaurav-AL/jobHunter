@@ -16,16 +16,16 @@ VITE_FIREBASE_MEASUREMENT_ID=...
 
 The backend `FIREBASE_PROJECT_ID` in `backend/.env` must equal the frontend `VITE_FIREBASE_PROJECT_ID`. `VITE_` settings are compiled into browser JavaScript; hiding the file from Git prevents accidental commits, but does not make client configuration secret. Protect access with Firebase Auth, Storage Security Rules, authorized domains, and API key restrictions.
 
-## Passwordless two-hour dashboard sign-in
+## Passwordless three-hour dashboard sign-in
 
 1. In Firebase Console, open **Authentication → Sign-in method → Email/Password**. Keep Email/Password enabled and enable **Email link (passwordless sign-in)** in its settings.
 2. In **Authentication → Settings → Authorized domains**, add `localhost` for local development and the actual production hostname after deployment.
 3. Rebuild and run the app with `docker compose up --build`; visit `http://localhost:3000/login`. From a phone on the same Wi-Fi, use the computer's LAN address, for example `http://192.168.x.x:3000`, and add that host to Firebase Authorized domains if Firebase permits it. The frontend uses the same-origin `/api` proxy; do not set its API base to `localhost:8080` for mobile use.
 4. Enter the email first; the faded access-link button is disabled while the email field is empty. Request the link and confirm the same email when completing the link. The email is not saved in browser local storage.
 
-The Firebase email link signs the user in for the current browser session. The app signs out after two hours, and the API rejects an email-link token after the same period. Email-link sign-in uses the Firebase Auth email delivery service; no additional SMTP configuration is needed for this login flow.
+The Firebase email link signs the user in for the current browser session. The app signs out after three hours, and the API rejects an email-link token after the same period. Email-link sign-in uses the Firebase Auth email delivery service; no additional SMTP configuration is needed for this login flow.
 
-For daily access, the GitHub workflow requests an additional sign-in email from Firebase Auth when `FIREBASE_WEB_API_KEY` and a public HTTPS `JOBHUNTER_DASHBOARD_URL` are configured. Firebase sends that one-time sign-in message separately from the SMTP job digest; once completed, the dashboard session lasts two hours. Firebase controls the one-time email link's own validity period. `localhost` is only usable on the computer running the app and does not make a mobile device or GitHub Actions runner able to reach it.
+For daily access, the GitHub workflow requests an additional sign-in email from Firebase Auth when `FIREBASE_WEB_API_KEY` and a public HTTPS `JOBHUNTER_DASHBOARD_URL` are configured. Firebase sends that one-time sign-in message separately from the SMTP job digest; once completed, the dashboard session lasts three hours. Firebase controls the one-time email link's own validity period. `localhost` is only usable on the computer running the app and does not make a mobile device or GitHub Actions runner able to reach it.
 
 ## Private resume file storage
 

@@ -19,6 +19,8 @@ const (
 	ProviderAshby      = "ashby"
 	ProviderHimalayas  = "himalayas"
 	ProviderJobicy     = "jobicy"
+	ProviderRemoteOK   = "remoteok"
+	ProviderArbeitnow  = "arbeitnow"
 )
 
 var boardSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$`)
@@ -51,6 +53,14 @@ func ParseBoardURL(raw string) (string, string, string, error) {
 	if host == "jobicy.com" && cleanPath == "/api/v2/remote-jobs" {
 		return ProviderJobicy, "apac", "https://jobicy.com/api/v2/remote-jobs?count=200&geo=apac", nil
 	}
+	// RemoteOK public JSON feed (no API key required)
+	if host == "remoteok.com" || host == "remoteok.io" {
+		return ProviderRemoteOK, "global", "https://remoteok.com/api", nil
+	}
+	// Arbeitnow free job board API (Europe/remote, no key required)
+	if host == "www.arbeitnow.com" || host == "arbeitnow.com" {
+		return ProviderArbeitnow, "global", "https://www.arbeitnow.com/api/job-board-api", nil
+	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
 		return "", "", "", fmt.Errorf("the URL must include the company's job board name")
@@ -64,7 +74,7 @@ func ParseBoardURL(raw string) (string, string, string, error) {
 	case host == "jobs.ashbyhq.com":
 		provider = ProviderAshby
 	default:
-		return "", "", "", fmt.Errorf("unsupported source; use a public Greenhouse, Lever, Ashby, Himalayas, or Jobicy URL")
+		return "", "", "", fmt.Errorf("unsupported source; use a public Greenhouse, Lever, Ashby, Himalayas, Jobicy, RemoteOK, or Arbeitnow URL")
 	}
 	slug := parts[0]
 	if !boardSlugPattern.MatchString(slug) {
@@ -103,6 +113,10 @@ func ScrapeJobs(sourceURL string) ([]*repository.Job, error) {
 		if err != nil {
 			return nil, err
 		}
+	case ProviderRemoteOK:
+		endpoint = "https://remoteok.com/api"
+	case ProviderArbeitnow:
+		endpoint = "https://www.arbeitnow.com/api/job-board-api"
 	}
 	request, _ := http.NewRequest(http.MethodGet, endpoint, nil)
 	request.Header.Set("Accept", "application/json")
@@ -287,6 +301,118 @@ func ScrapeJobs(sourceURL string) ([]*repository.Job, error) {
 			jobs = append(jobs, &repository.Job{ExternalID: fmt.Sprint(item.ID), Company: item.Company, Title: item.Title, Description: cleanHTML(item.Description + " " + item.Excerpt), URL: item.URL, ApplyURL: item.URL, Location: item.Location, PublishedAt: publishedAt, ScrapedAt: now, LastSeenAt: now, IsActive: true})
 		}
 		return jobs, nil
+	case ProviderRemoteOK:
+		// RemoteOK API returns a JSON array; the first element is a legal notice object.
+		var rawItems []json.RawMessage
+		if err := json.Unmarshal(body, &rawItems); err != nil {
+			return nil, fmt.Errorf("invalid RemoteOK response: %w", err)
+		}
+		type remoteOKJob struct {
+			ID          string   `json:"id"`
+			Slug        string   `json:"slug"`
+			Position    string   `json:"position"`
+			Company     string   `json:"company"`
+			Location    string   `json:"location"`
+			Tags        []string `json:"tags"`
+			Description string   `json:"description"`
+			URL         string   `json:"url"`
+			Date        string   `json:"date"`
+		}
+		jobs := make([]*repository.Job, 0, len(rawItems))
+		for _, raw := range rawItems {
+			var item remoteOKJob
+			if err := json.Unmarshal(raw, &item); err != nil {
+				continue
+			}
+			if item.ID == "" || item.Position == "" {
+				continue
+			}
+			jobURL := item.URL
+			if jobURL == "" && item.Slug != "" {
+				jobURL = "https://remoteok.com/remote-jobs/" + item.Slug
+			}
+			if jobURL == "" {
+				continue
+			}
+			location := item.Location
+			if location == "" {
+				location = "Worldwide remote"
+			}
+			description := item.Description
+			if description == "" && len(item.Tags) > 0 {
+				description = strings.Join(item.Tags, ", ")
+			}
+			publishedAt := parsePublishedDate(item.Date)
+			jobs = append(jobs, &repository.Job{
+				ExternalID:  item.ID,
+				Company:     item.Company,
+				Title:       item.Position,
+				Description: cleanHTML(description),
+				URL:         jobURL,
+				ApplyURL:    jobURL,
+				Location:    location,
+				PublishedAt: publishedAt,
+				ScrapedAt:   now,
+				LastSeenAt:  now,
+				IsActive:    true,
+			})
+		}
+		return jobs, nil
+	case ProviderArbeitnow:
+		// Arbeitnow returns paginated JSON with a "data" array.
+		var payload struct {
+			Data []struct {
+				Slug        string   `json:"slug"`
+				Title       string   `json:"title"`
+				CompanyName string   `json:"company_name"`
+				Location    string   `json:"location"`
+				Description string   `json:"description"`
+				Tags        []string `json:"tags"`
+				URL         string   `json:"url"`
+				CreatedAt   int64    `json:"created_at"`
+				Remote      bool     `json:"remote"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, fmt.Errorf("invalid Arbeitnow response: %w", err)
+		}
+		jobs := make([]*repository.Job, 0, len(payload.Data))
+		for _, item := range payload.Data {
+			if item.Slug == "" || item.Title == "" {
+				continue
+			}
+			jobURL := item.URL
+			if jobURL == "" {
+				jobURL = "https://www.arbeitnow.com/jobs/" + item.Slug
+			}
+			location := item.Location
+			if item.Remote && location == "" {
+				location = "Remote"
+			}
+			var publishedAt *time.Time
+			if item.CreatedAt > 0 {
+				t := time.Unix(item.CreatedAt, 0).UTC()
+				publishedAt = &t
+			}
+			description := item.Description
+			if description == "" && len(item.Tags) > 0 {
+				description = strings.Join(item.Tags, ", ")
+			}
+			jobs = append(jobs, &repository.Job{
+				ExternalID:  item.Slug,
+				Company:     item.CompanyName,
+				Title:       item.Title,
+				Description: cleanHTML(description),
+				URL:         jobURL,
+				ApplyURL:    jobURL,
+				Location:    location,
+				PublishedAt: publishedAt,
+				ScrapedAt:   now,
+				LastSeenAt:  now,
+				IsActive:    true,
+			})
+		}
+		return jobs, nil
 	}
 	return nil, fmt.Errorf("unsupported provider %q", provider)
 }
@@ -339,7 +465,7 @@ func ScrapeJob(sourceURL string) (*repository.Job, error) {
 func DiscoverSources(query string) []SourceCandidate {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return []SourceCandidate{{Name: "Paste a public job source URL", Status: "supported: Greenhouse, Lever, Ashby, Himalayas, Jobicy"}}
+		return []SourceCandidate{{Name: "Paste a public job source URL", Status: "supported: Greenhouse, Lever, Ashby, Himalayas, Jobicy, RemoteOK, Arbeitnow"}}
 	}
 	if !strings.Contains(query, "://") {
 		query = "https://" + strings.TrimPrefix(query, "www.")
@@ -350,6 +476,12 @@ func DiscoverSources(query string) []SourceCandidate {
 			label := map[string]string{ProviderHimalayas: "Himalayas · India", ProviderJobicy: "Jobicy · APAC remote"}[provider]
 			return []SourceCandidate{{Name: label, URL: canonicalURL, Provider: provider, Status: "public feed · no API key"}}
 		}
+		if provider == ProviderRemoteOK {
+			return []SourceCandidate{{Name: "RemoteOK · Worldwide remote", URL: canonicalURL, Provider: provider, Status: "public feed · no API key"}}
+		}
+		if provider == ProviderArbeitnow {
+			return []SourceCandidate{{Name: "Arbeitnow · Europe/Remote", URL: canonicalURL, Provider: provider, Status: "public feed · no API key"}}
+		}
 		count, status := probeBoard(provider, slug, query)
 		name := map[string]string{ProviderGreenhouse: "Greenhouse", ProviderLever: "Lever", ProviderAshby: "Ashby"}[provider]
 		if count > 0 {
@@ -357,7 +489,7 @@ func DiscoverSources(query string) []SourceCandidate {
 		}
 		return []SourceCandidate{{Name: name + " · " + slug, URL: canonicalURL, Provider: provider, Status: status}}
 	}
-	return []SourceCandidate{{Name: "Unsupported career URL", URL: query, Status: "Paste the company's public Greenhouse, Lever, or Ashby board URL."}}
+	return []SourceCandidate{{Name: "Unsupported career URL", URL: query, Status: "Paste the company's public Greenhouse, Lever, Ashby, RemoteOK, or Arbeitnow board URL."}}
 }
 
 func probeBoard(provider, slug, originalURL string) (int, string) {

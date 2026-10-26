@@ -17,18 +17,22 @@
       </form>
 
       <div class="email-link-area">
-        <button type="button" class="btn btn-secondary" style="width: 100%;" :disabled="sendingLink || !email.trim()" @click="sendTemporaryLink">
-          {{ sendingLink ? 'Sending link…' : 'Email me a 2-hour access link' }}
+        <button
+          type="button"
+          class="btn btn-secondary"
+          style="width: 100%;"
+          :disabled="sendingLink || !email.trim()"
+          @click="sendTemporaryLink"
+        >
+          {{ sendingLink ? 'Sending link…' : 'Email me 2hr link' }}
         </button>
-        <p class="subtitle">The sign-in link is one-time. Dashboard access expires two hours after sign-in.</p>
-        <small v-if="!email.trim()" class="link-hint">Enter your email above to enable this button.</small>
+        <p class="subtitle">
+          Click to receive a one-time 2-hour link at your email. Opening the link presents a password-protected
+          prompt to directly open your dashboard with your pre-filled job drafts. Access lasts 2 hours.
+        </p>
+        <small v-if="!email.trim()" class="link-hint">Enter your email and password above to enable this button.</small>
       </div>
 
-      <form v-if="confirmEmailForLink" @submit.prevent="completeEmailLink" class="mt-4">
-        <label for="link-email">Confirm the email address that received the link</label>
-        <input type="email" id="link-email" v-model="email" class="input-field" autocomplete="email" required />
-        <button type="submit" class="btn btn-primary" style="width: 100%;">Continue securely</button>
-      </form>
       <p v-if="linkMessage" class="link-message" role="status">{{ linkMessage }}</p>
       
       <p class="mt-4 text-center">
@@ -41,10 +45,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { auth } from '../firebase';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, browserSessionPersistence, isSignInWithEmailLink, sendSignInLinkToEmail, setPersistence, signInWithEmailLink } from 'firebase/auth';
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendSignInLinkToEmail,
+} from 'firebase/auth';
 import { apiFetch } from '../api';
 
 const router = useRouter();
@@ -52,15 +60,11 @@ const email = ref('');
 const password = ref('');
 const isRegistering = ref(false);
 const sendingLink = ref(false);
-const confirmEmailForLink = ref(false);
 const linkMessage = ref('');
 
-onMounted(() => {
-  if (isSignInWithEmailLink(auth, window.location.href)) {
-    confirmEmailForLink.value = true;
-    linkMessage.value = 'Confirm the email address that received this one-time sign-in link.';
-  }
-});
+// How long the emailed link should be valid (2 hours expressed in ms for UX copy).
+// Firebase itself enforces the expiry; we just show this in the UI.
+const LINK_HOURS = 2;
 
 const handleLogin = async () => {
   try {
@@ -69,7 +73,7 @@ const handleLogin = async () => {
       const res = await apiFetch('/api/users/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.value, firebase_uid: auth.currentUser?.uid })
+        body: JSON.stringify({ email: email.value, firebase_uid: auth.currentUser?.uid }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -87,37 +91,28 @@ const handleLogin = async () => {
 const sendTemporaryLink = async () => {
   sendingLink.value = true;
   linkMessage.value = '';
+  const trimmedEmail = email.value.trim();
   try {
-    await sendSignInLinkToEmail(auth, email.value.trim(), {
-      url: `${window.location.origin}/login`,
+    // Save the email so the callback page can complete sign-in without prompting
+    window.localStorage.setItem('jobhunterSignInEmail', trimmedEmail);
+
+    await sendSignInLinkToEmail(auth, trimmedEmail, {
+      // The callback route handles the link and redirects straight to dashboard
+      url: `${window.location.origin}/auth/callback`,
       handleCodeInApp: true,
     });
-    linkMessage.value = `A one-time sign-in link was sent to ${email.value.trim()}. It grants dashboard access for two hours after sign-in.`;
+
+    linkMessage.value =
+      `✅ A one-time sign-in link was sent to ${trimmedEmail}. ` +
+      `Click the link in the email to open your dashboard directly. ` +
+      `Access expires ${LINK_HOURS} hours after sign-in.`;
   } catch (error: any) {
-    linkMessage.value = error.message || 'Could not send the sign-in link. Check Firebase Email Link sign-in setup.';
+    window.localStorage.removeItem('jobhunterSignInEmail');
+    linkMessage.value =
+      error.message ||
+      'Could not send the sign-in link. Check Firebase Email Link sign-in is enabled.';
   } finally {
     sendingLink.value = false;
-  }
-};
-
-const completeEmailLink = async () => {
-  if (!isSignInWithEmailLink(auth, window.location.href) || !email.value.trim()) return;
-  try {
-    await setPersistence(auth, browserSessionPersistence);
-    const credential = await signInWithEmailLink(auth, email.value.trim(), window.location.href);
-    confirmEmailForLink.value = false;
-    const res = await apiFetch('/api/users/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.value.trim(), firebase_uid: credential.user.uid }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || 'Sign-in succeeded, but account setup failed.');
-    }
-    await router.replace('/');
-  } catch (error: any) {
-    linkMessage.value = error.message || 'The sign-in link could not be verified. Request a new link and open it on this device.';
   }
 };
 </script>
