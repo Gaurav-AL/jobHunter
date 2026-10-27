@@ -20,6 +20,7 @@ import (
 const (
     githubOIDCIssuer = "https://token.actions.githubusercontent.com"
     githubOIDCAudience = "https://jobhunter-1d1b1.web.app/internal/scheduler/run"
+    githubOIDCAudienceAlt = "https://jobhunter-1d1b1.web.app/api/internal/scheduler/run"
     githubOIDCRepository = "Gaurav-AL/jobHunter"
     githubOIDCWorkflow = ".github/workflows/daily-job-digest.yml@refs/heads/main"
     githubOIDCJWKSURL = "https://token.actions.githubusercontent.com/.well-known/jwks"
@@ -55,7 +56,7 @@ func verifyGitHubActionsToken(token string) error {
     var claims githubJWTClaims
     if err := json.Unmarshal(claimsBytes, &claims); err != nil { return err }
     now := time.Now().Unix()
-    if claims.Issuer != githubOIDCIssuer || claims.Repository != githubOIDCRepository || claims.WorkflowRef != githubOIDCWorkflow || claims.Exp <= now || (claims.Nbf != 0 && claims.Nbf > now+30) || !audienceMatches(claims.Audience, githubOIDCAudience) { return fmt.Errorf("unexpected token claims") }
+    if claims.Issuer != githubOIDCIssuer || claims.Repository != githubOIDCRepository || claims.WorkflowRef != githubOIDCWorkflow || claims.Exp <= now || (claims.Nbf != 0 && claims.Nbf > now+30) || (!audienceMatches(claims.Audience, githubOIDCAudience) && !audienceMatches(claims.Audience, githubOIDCAudienceAlt)) { return fmt.Errorf("unexpected token claims") }
     return nil
 }
 

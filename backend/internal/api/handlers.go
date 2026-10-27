@@ -27,6 +27,7 @@ const jobHunterProjectHighlight = "JobHunter — personal project: Go/Gin backen
 
 func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	r.POST("/internal/scheduler/run", GitHubActionsAuth(), func(c *gin.Context) { RunScheduledRefresh(c, db) })
+	r.POST("/api/internal/scheduler/run", GitHubActionsAuth(), func(c *gin.Context) { RunScheduledRefresh(c, db) })
 	r.POST("/api/public/touch-activity", func(c *gin.Context) { TouchUserActivity(c, db) })
 
 	api := r.Group("/api")

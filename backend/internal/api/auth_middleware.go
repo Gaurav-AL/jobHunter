@@ -49,7 +49,7 @@ const temporaryEmailLinkSessionLifetime = 2 * time.Hour
 
 func FirebaseAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.Request.URL.Path == "/api/integrations/health" {
+		if c.Request.URL.Path == "/api/integrations/health" || strings.HasPrefix(c.Request.URL.Path, "/api/internal/") || strings.HasPrefix(c.Request.URL.Path, "/api/public/") {
 			c.Next()
 			return
 		}

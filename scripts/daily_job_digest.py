@@ -426,15 +426,24 @@ def refresh_dashboard_sources() -> tuple[str, list[dict]]:
         )
         with urllib.request.urlopen(token_request, timeout=20) as response:
             token = json.loads(response.read(65536).decode("utf-8"))["value"]
-        request = urllib.request.Request(
-            dashboard_url + "/internal/scheduler/run", data=b"{}",
-            headers={"Content-Type": "application/json", "Authorization": "Bearer " + token}, method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=300) as response:
-            data = json.loads(response.read(65536).decode("utf-8"))
-        msg = str(data.get("message") or "completed")
-        recipients = data.get("recipients") or []
-        return msg, recipients
+
+        # Try /internal/scheduler/run first, then fallback to /api/internal/scheduler/run
+        for path in ("/internal/scheduler/run", "/api/internal/scheduler/run"):
+            try:
+                request = urllib.request.Request(
+                    dashboard_url + path, data=b"{}",
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer " + token}, method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    content_type = response.headers.get("Content-Type", "")
+                    if "json" in content_type:
+                        data = json.loads(response.read(65536).decode("utf-8"))
+                        msg = str(data.get("message") or "completed")
+                        recipients = data.get("recipients") or []
+                        return msg, recipients
+            except Exception:
+                continue
+        return "failed; non-JSON or unreachable endpoint", []
     except Exception as exc:
         print(f"Saved-source refresh failed ({type(exc).__name__}); continuing with external job feeds.", file=sys.stderr)
         return "failed; see workflow logs", []
@@ -595,8 +604,12 @@ def main() -> int:
                 if email and "@" in email and not any(x["email"].lower() == email.lower() for x in recipients_list):
                     recipients_list.append(r)
 
-        # Fallback to DEFAULT_JOB_EMAIL or JOB_EMAIL_TO if no active registered users found in DB
-        fallback_email = os.getenv("DEFAULT_JOB_EMAIL", "").strip() or os.getenv("JOB_EMAIL_TO", "").strip()
+        # Fallback to DEFAULT_JOB_EMAIL, JOB_EMAIL_TO, or SMTP_USER if no active registered users found in DB
+        fallback_email = (
+            os.getenv("DEFAULT_JOB_EMAIL", "").strip()
+            or os.getenv("JOB_EMAIL_TO", "").strip()
+            or os.getenv("SMTP_USER", "").strip()
+        )
         if not recipients_list:
             if fallback_email:
                 print(f"No active users in 5-day window returned from database; using fallback recipient: {fallback_email}")
