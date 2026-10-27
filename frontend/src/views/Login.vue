@@ -53,7 +53,7 @@ import {
   createUserWithEmailAndPassword,
   sendSignInLinkToEmail,
 } from 'firebase/auth';
-import { apiFetch } from '../api';
+import { apiFetch, exchangeSessionToken } from '../api';
 
 const router = useRouter();
 const email = ref('');
@@ -94,6 +94,8 @@ const handleLogin = async () => {
         body: JSON.stringify({ email: email.value.trim() }),
       }).catch(() => {});
     }
+    // Mint 2-hour backend Session JWT on login
+    await exchangeSessionToken().catch(() => {});
     router.push('/');
   } catch (error: any) {
     alert(error.message);

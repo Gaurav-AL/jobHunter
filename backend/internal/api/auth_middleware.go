@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto"
+	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -29,6 +30,96 @@ var (
 	certExpires time.Time
 )
 
+type SessionClaims struct {
+	UserID      uint   `json:"user_id"`
+	Email       string `json:"email"`
+	FirebaseUID string `json:"firebase_uid"`
+	IssuedAt    int64  `json:"iat"`
+	ExpiresAt   int64  `json:"exp"`
+}
+
+func getSessionSecret() []byte {
+	secret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if secret == "" {
+		secret = "jobhunter-2hr-session-secret-key-stable-dev"
+	}
+	return []byte(secret)
+}
+
+// GenerateSessionToken creates an HMAC-SHA256 signed JWT valid for strictly 2 hours.
+func GenerateSessionToken(userID uint, email, firebaseUID string) (string, int64, error) {
+	now := time.Now()
+	expiresAt := now.Add(2 * time.Hour).Unix()
+
+	header := map[string]string{"alg": "HS256", "typ": "JWT"}
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		return "", 0, err
+	}
+
+	claims := SessionClaims{
+		UserID:      userID,
+		Email:       email,
+		FirebaseUID: firebaseUID,
+		IssuedAt:    now.Unix(),
+		ExpiresAt:   expiresAt,
+	}
+	claimsBytes, err := json.Marshal(claims)
+	if err != nil {
+		return "", 0, err
+	}
+
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerBytes)
+	encodedClaims := base64.RawURLEncoding.EncodeToString(claimsBytes)
+	message := encodedHeader + "." + encodedClaims
+
+	mac := hmac.New(sha256.New, getSessionSecret())
+	mac.Write([]byte(message))
+	signature := mac.Sum(nil)
+	encodedSignature := base64.RawURLEncoding.EncodeToString(signature)
+
+	return message + "." + encodedSignature, expiresAt, nil
+}
+
+// VerifySessionToken validates the 2-hour session JWT token.
+func VerifySessionToken(tokenString string) (*SessionClaims, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("malformed session token")
+	}
+
+	message := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, getSessionSecret())
+	mac.Write([]byte(message))
+	expectedSignature := mac.Sum(nil)
+
+	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid signature encoding")
+	}
+
+	if !hmac.Equal(signatureBytes, expectedSignature) {
+		return nil, fmt.Errorf("invalid session signature")
+	}
+
+	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid claims encoding")
+	}
+
+	var claims SessionClaims
+	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
+		return nil, fmt.Errorf("invalid claims json")
+	}
+
+	now := time.Now().Unix()
+	if claims.ExpiresAt <= now {
+		return nil, fmt.Errorf("session token expired")
+	}
+
+	return &claims, nil
+}
+
 type firebaseTokenHeader struct {
 	Alg   string `json:"alg"`
 	KeyID string `json:"kid"`
@@ -54,19 +145,33 @@ func FirebaseAuth() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+
+		header := strings.TrimSpace(c.GetHeader("Authorization"))
+		if !strings.HasPrefix(header, "Bearer ") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization Bearer token is required"})
+			return
+		}
+		rawToken := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+
+		// 1. First, check if the request provides a valid 2-Hour Session JWT.
+		// If valid, session verification completes purely in-memory (0.05ms) with zero DB/Google lookups.
+		if sessionClaims, err := VerifySessionToken(rawToken); err == nil {
+			c.Set("user_id", sessionClaims.UserID)
+			c.Set("firebase_uid", sessionClaims.FirebaseUID)
+			c.Set("firebase_email", sessionClaims.Email)
+			c.Next()
+			return
+		}
+
+		// 2. Otherwise verify as a direct Firebase ID token (used during initial login / session exchange)
 		projectID := strings.TrimSpace(os.Getenv("FIREBASE_PROJECT_ID"))
 		if projectID == "" {
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "Firebase auth is not configured on the server"})
 			return
 		}
-		header := strings.TrimSpace(c.GetHeader("Authorization"))
-		if !strings.HasPrefix(header, "Bearer ") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Firebase ID token is required"})
-			return
-		}
-		uid, email, err := verifyFirebaseIDToken(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")), projectID)
+		uid, email, err := verifyFirebaseIDToken(rawToken, projectID)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Firebase ID token is invalid or expired"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Session token is invalid or expired. Please sign in again."})
 			return
 		}
 		c.Set("firebase_uid", uid)

@@ -57,7 +57,7 @@ import {
   EmailAuthProvider,
   reauthenticateWithCredential,
 } from 'firebase/auth';
-import { apiFetch } from '../api';
+import { apiFetch, exchangeSessionToken } from '../api';
 
 // ── The password that protects dashboard access via email-link sign-in.
 // Store the real password in VITE_LINK_GATE_PASSWORD env var.
@@ -99,6 +99,9 @@ const completeLinkSignIn = async (email: string) => {
 
     // Clear the saved email so the next open of /login is clean
     window.localStorage.removeItem('jobhunterSignInEmail');
+
+    // Mint 2-hour backend Session JWT on sign-in
+    await exchangeSessionToken().catch(() => {});
 
     // If a password gate is configured, show it; otherwise go straight to dashboard
     if (GATE_PASSWORD) {
