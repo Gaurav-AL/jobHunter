@@ -100,6 +100,38 @@
             <small v-if="resumeMessage">{{ resumeMessage }}</small>
           </form>
 
+          <div class="upload-box resume-scraper-box">
+            <h4>Resume Scraper & AI Parser</h4>
+            <p>Paste or edit your resume text directly to scrape, extract, and auto-populate your skills, roles, and profile details without needing to upload a file.</p>
+            <textarea
+              v-model="resumeScraperText"
+              class="input-field textarea"
+              style="min-height: 120px; font-family: monospace; font-size: 0.85rem;"
+              placeholder="Paste raw resume text here (experience, skills, contact details, projects)..."
+            ></textarea>
+            <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <button
+                type="button"
+                class="btn btn-primary"
+                :disabled="!resumeScraperText.trim() || scrapingResume"
+                @click="scrapeResume"
+              >
+                {{ scrapingResume ? 'Scraping & Extracting…' : '⚡ Scrape & Auto-fill Profile' }}
+              </button>
+              <button
+                v-if="profile.resume_text && profile.resume_text !== resumeScraperText"
+                type="button"
+                class="btn btn-secondary"
+                @click="resumeScraperText = profile.resume_text"
+              >
+                Load Saved Resume Text
+              </button>
+            </div>
+            <small v-if="scrapeMessage" :class="{ 'error-msg': scrapeError, 'success-msg': !scrapeError }">
+              {{ scrapeMessage }}
+            </small>
+          </div>
+
           <form @submit.prevent="discoverSources" class="upload-box">
             <h4>Find a company job board</h4>
           <p>Paste a public Greenhouse, Lever, or Ashby board URL. General career pages are not a reliable live source.</p>
@@ -445,6 +477,7 @@ const jobScoreFilter = ref<number>(0);
 const profile = reactive({
   email: '',
   resume_url: '',
+  resume_text: '',
   profile_summary: '',
   target_roles: '',
   skills: '',
@@ -468,6 +501,11 @@ const profile = reactive({
   applicant_years_experience: '',
   salary_expectation: '',
 });
+
+const resumeScraperText = ref('');
+const scrapingResume = ref(false);
+const scrapeMessage = ref('');
+const scrapeError = ref(false);
 
 const pendingDrafts = computed(() => drafts.value.filter(draft => draft.Status === 'pending').length);
 const appliedCount = computed(() => matchedJobs.value.filter(job => job.Status === 'applied').length);
@@ -534,6 +572,10 @@ const firebaseParams = async () => {
 const applyProfile = (user: any) => {
   profile.email = user?.email || '';
   profile.resume_url = user?.resume_url || '';
+  profile.resume_text = user?.resume_text || '';
+  if (!resumeScraperText.value && user?.resume_text) {
+    resumeScraperText.value = user.resume_text;
+  }
   profile.profile_summary = user?.profile_summary || '';
   profile.target_roles = user?.target_roles || '';
   profile.skills = user?.skills || '';
@@ -561,6 +603,15 @@ const applyProfile = (user: any) => {
 const refreshAll = async () => {
   loading.value = true;
   try {
+    // Ensure user record is registered/linked in backend on every load
+    if (auth.currentUser?.uid) {
+      apiFetch('/api/users/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: auth.currentUser.email || '', firebase_uid: auth.currentUser.uid }),
+      }).catch(() => {});
+    }
+
     const params = await firebaseParams();
     const [dashboardRes, draftsRes, sourcesRes] = await Promise.all([
       apiFetch(`/api/dashboard?${params.toString()}`),
@@ -578,6 +629,31 @@ const refreshAll = async () => {
     alert(error.message || 'Failed to refresh dashboard.');
   } finally {
     loading.value = false;
+  }
+};
+
+const scrapeResume = async () => {
+  if (!resumeScraperText.value.trim()) return;
+  scrapingResume.value = true;
+  scrapeMessage.value = '';
+  scrapeError.value = false;
+  try {
+    const res = await apiFetch('/api/users/resume/scrape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_text: resumeScraperText.value }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Failed to scrape resume');
+    if (body.applicant_profile) applyProfile(body.applicant_profile);
+    if (body.profile_summary) profile.profile_summary = body.profile_summary;
+    scrapeMessage.value = body.warning || '✅ Resume successfully scraped! Skills, roles, and profile details auto-filled.';
+    await refreshAll();
+  } catch (err: any) {
+    scrapeError.value = true;
+    scrapeMessage.value = err.message || 'Scrape failed.';
+  } finally {
+    scrapingResume.value = false;
   }
 };
 

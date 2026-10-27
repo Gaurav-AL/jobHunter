@@ -80,7 +80,13 @@ const handleLogin = async () => {
         throw new Error(body.error || 'Firebase login succeeded, but backend user registration failed');
       }
     } else {
-      await signInWithEmailAndPassword(auth, email.value, password.value);
+      const userCred = await signInWithEmailAndPassword(auth, email.value, password.value);
+      // Ensure user record is registered/linked in backend on every login
+      apiFetch('/api/users/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.value.trim(), firebase_uid: userCred.user.uid }),
+      }).catch(() => {});
       // Refresh 5-day active window on login
       apiFetch('/api/public/touch-activity', {
         method: 'POST',

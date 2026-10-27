@@ -36,6 +36,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	// Users
 	api.POST("/users/register", func(c *gin.Context) { RegisterUser(c, db) })
 	api.POST("/users/resume", func(c *gin.Context) { UploadResume(c, db) })
+	api.POST("/users/resume/scrape", func(c *gin.Context) { ScrapeResume(c, db) })
 	api.POST("/users/settings", func(c *gin.Context) { UpdateSettings(c, db) })
 	api.POST("/users/phone/verify", func(c *gin.Context) { SendPhoneVerification(c, db) })
 	api.POST("/users/phone/confirm", func(c *gin.Context) { ConfirmPhoneVerification(c, db) })
@@ -61,7 +62,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	api.GET("/jobs/export.xlsx", func(c *gin.Context) { ExportMatchedJobsXLSX(c, db) })
 }
 
-func resolveUserID(db *gorm.DB, userIDValue, firebaseUID string) (uint, error) {
+func resolveUserID(db *gorm.DB, userIDValue, firebaseUID, firebaseEmail string) (uint, error) {
 	if userIDValue != "" {
 		parsedID, err := strconv.ParseUint(userIDValue, 10, 64)
 		if err != nil || parsedID == 0 {
@@ -75,14 +76,54 @@ func resolveUserID(db *gorm.DB, userIDValue, firebaseUID string) (uint, error) {
 	}
 
 	var user repository.User
-	if err := db.Where("firebase_uid = ?", firebaseUID).First(&user).Error; err != nil {
-		return 0, fmt.Errorf("user not found for firebase_uid")
+	// 1. Check if user exists by firebase_uid
+	if err := db.Where("firebase_uid = ?", firebaseUID).First(&user).Error; err == nil {
+		now := time.Now()
+		if user.LastActiveAt == nil || now.Sub(*user.LastActiveAt) > 30*time.Minute {
+			db.Model(&user).Update("last_active_at", now)
+		}
+		cleanEmail := strings.TrimSpace(firebaseEmail)
+		if user.Email == "" && cleanEmail != "" {
+			db.Model(&user).Update("email", cleanEmail)
+		}
+		return user.ID, nil
 	}
 
-	// Update last_active_at opportunistically (throttle to at most once per 30 minutes to reduce write overhead)
+	// 2. If not found by firebase_uid, check if user exists by email
+	cleanEmail := strings.TrimSpace(firebaseEmail)
+	if cleanEmail != "" {
+		if err := db.Where("LOWER(email) = LOWER(?)", cleanEmail).First(&user).Error; err == nil {
+			now := time.Now()
+			db.Model(&user).Updates(map[string]any{
+				"firebase_uid":   firebaseUID,
+				"last_active_at": now,
+			})
+			return user.ID, nil
+		}
+	}
+
+	// 3. Just-In-Time (JIT) Auto-Provision user record so authenticated Firebase users never fail
 	now := time.Now()
-	if user.LastActiveAt == nil || now.Sub(*user.LastActiveAt) > 30*time.Minute {
-		db.Model(&user).Update("last_active_at", now)
+	targetEmail := cleanEmail
+	if targetEmail == "" {
+		targetEmail = firebaseUID + "@jobhunter.local"
+	}
+	user = repository.User{
+		Email:        targetEmail,
+		FirebaseUID:  firebaseUID,
+		LastActiveAt: &now,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		if cleanEmail != "" {
+			if err2 := db.Where("LOWER(email) = LOWER(?)", cleanEmail).First(&user).Error; err2 == nil {
+				db.Model(&user).Updates(map[string]any{
+					"firebase_uid":   firebaseUID,
+					"last_active_at": now,
+				})
+				return user.ID, nil
+			}
+		}
+		return 0, fmt.Errorf("failed to auto-provision user record: %v", err)
 	}
 
 	return user.ID, nil
@@ -93,7 +134,8 @@ func authenticatedUserID(c *gin.Context, db *gorm.DB) (uint, error) {
 	if uid == "" {
 		return 0, fmt.Errorf("authenticated Firebase user is required")
 	}
-	return resolveUserID(db, "", uid)
+	email := c.GetString("firebase_email")
+	return resolveUserID(db, "", uid, email)
 }
 
 type RegisterRequest struct {
@@ -119,7 +161,91 @@ func TouchUserActivity(c *gin.Context, db *gorm.DB) {
 	}
 	now := time.Now()
 	res := db.Model(&repository.User{}).Where("LOWER(email) = LOWER(?)", cleanEmail).Update("last_active_at", now)
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "updated": res.RowsAffected > 0})
+	if res.RowsAffected == 0 {
+		var existing repository.User
+		if err := db.Where("LOWER(email) = LOWER(?)", cleanEmail).First(&existing).Error; err != nil {
+			newUser := repository.User{
+				Email:        cleanEmail,
+				FirebaseUID:  "pending-" + cleanEmail,
+				LastActiveAt: &now,
+			}
+			db.Create(&newUser)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+type ScrapeResumeRequest struct {
+	ResumeText string `json:"resume_text" binding:"required"`
+}
+
+// ScrapeResume parses raw resume text via AI & local heuristics, saving extracted profile fields to the user record.
+func ScrapeResume(c *gin.Context, db *gorm.DB) {
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req ScrapeResumeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "resume_text is required"})
+		return
+	}
+
+	text := strings.TrimSpace(req.ResumeText)
+	if text == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "resume_text cannot be empty"})
+		return
+	}
+
+	var aiApplicantProfile services.ApplicantExtraction
+	var extractionWarning string
+	if generatedProfile, err := services.ExtractApplicantProfile(text); err == nil {
+		aiApplicantProfile = generatedProfile
+	} else {
+		extractionWarning = "AI extraction notice: " + err.Error()
+	}
+
+	updates := map[string]any{
+		"resume_text": text,
+	}
+	applicantValues := applicantExtractionValues(aiApplicantProfile)
+	for column, value := range extractApplicantDetailsLocal(text) {
+		if applicantValues[column] == "" {
+			applicantValues[column] = value
+		}
+	}
+	for column, value := range applicantValues {
+		if strings.TrimSpace(value) != "" {
+			updates[column] = strings.TrimSpace(value)
+		}
+	}
+	for column, value := range map[string]string{
+		"profile_summary": aiApplicantProfile.ProfileSummary,
+		"target_roles":    aiApplicantProfile.TargetRoles,
+		"skills":          aiApplicantProfile.Skills,
+		"location":        aiApplicantProfile.Location,
+	} {
+		if strings.TrimSpace(value) != "" {
+			updates[column] = strings.TrimSpace(value)
+		}
+	}
+
+	if err := db.Model(&repository.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not update applicant profile"})
+		return
+	}
+
+	var updatedUser repository.User
+	db.First(&updatedUser, userID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Resume parsed and profile updated successfully",
+		"warning":           extractionWarning,
+		"applicant_profile": updatedUser,
+		"profile_summary":   updatedUser.ProfileSummary,
+	})
 }
 
 func RegisterUser(c *gin.Context, db *gorm.DB) {

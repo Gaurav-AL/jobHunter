@@ -37,6 +37,7 @@ type firebaseTokenClaims struct {
 	Issuer    string `json:"iss"`
 	Audience  any    `json:"aud"`
 	Subject   string `json:"sub"`
+	Email     string `json:"email"`
 	ExpiresAt int64  `json:"exp"`
 	IssuedAt  int64  `json:"iat"`
 	AuthTime  int64  `json:"auth_time"`
@@ -63,64 +64,65 @@ func FirebaseAuth() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Firebase ID token is required"})
 			return
 		}
-		uid, err := verifyFirebaseIDToken(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")), projectID)
+		uid, email, err := verifyFirebaseIDToken(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")), projectID)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Firebase ID token is invalid or expired"})
 			return
 		}
 		c.Set("firebase_uid", uid)
+		c.Set("firebase_email", email)
 		c.Next()
 	}
 }
 
-func verifyFirebaseIDToken(rawToken, projectID string) (string, error) {
+func verifyFirebaseIDToken(rawToken, projectID string) (string, string, error) {
 	parts := strings.Split(rawToken, ".")
 	if len(parts) != 3 {
-		return "", fmt.Errorf("malformed token")
+		return "", "", fmt.Errorf("malformed token")
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var header firebaseTokenHeader
 	if err := json.Unmarshal(headerBytes, &header); err != nil || header.Alg != "RS256" || header.KeyID == "" {
-		return "", fmt.Errorf("unsupported token header")
+		return "", "", fmt.Errorf("unsupported token header")
 	}
 	keys, err := firebaseKeys()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	key := keys[header.KeyID]
 	if key == nil {
-		return "", fmt.Errorf("unknown token signing key")
+		return "", "", fmt.Errorf("unknown token signing key")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature); err != nil {
-		return "", fmt.Errorf("invalid token signature")
+		return "", "", fmt.Errorf("invalid token signature")
 	}
 	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var claims firebaseTokenClaims
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
-		return "", err
+		return "", "", err
 	}
 	now := time.Now().Unix()
 	if claims.Issuer != "https://securetoken.google.com/"+projectID || !audienceMatches(claims.Audience, projectID) || claims.Subject == "" || len(claims.Subject) > 128 {
-		return "", fmt.Errorf("invalid token identity")
+		return "", "", fmt.Errorf("invalid token identity")
 	}
 	if claims.ExpiresAt == 0 || now >= claims.ExpiresAt || claims.IssuedAt == 0 || claims.IssuedAt > now+30 || claims.AuthTime == 0 || claims.AuthTime > now+30 {
-		return "", fmt.Errorf("invalid token lifetime")
+		return "", "", fmt.Errorf("invalid token lifetime")
 	}
 	if claims.Firebase.SignInProvider == "emailLink" && now-claims.AuthTime > int64(temporaryEmailLinkSessionLifetime.Seconds()) {
-		return "", fmt.Errorf("temporary email-link session expired")
+		return "", "", fmt.Errorf("temporary email-link session expired")
 	}
-	return claims.Subject, nil
+	return claims.Subject, claims.Email, nil
 }
 
 func audienceMatches(audience any, projectID string) bool {
