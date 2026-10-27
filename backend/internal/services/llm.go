@@ -234,6 +234,11 @@ Resume text:
 	return extracted, nil
 }
 
+// GenerateTailoredResume wraps GenerateTailoredLatexResume for backward compatibility.
+func GenerateTailoredResume(resumeText, jobTitle, jobDescription string) (string, error) {
+	return GenerateTailoredLatexResume(resumeText, jobTitle, "", jobDescription)
+}
+
 // GenerateTailoredLatexResume produces clean, 100% compilable LaTeX resume code
 // tailored specifically for the target job without misrepresenting the candidate's real experience.
 func GenerateTailoredLatexResume(resumeText, jobTitle, company, jobDescription string) (string, error) {
