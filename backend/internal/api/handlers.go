@@ -771,10 +771,10 @@ func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
 	if job.ID == 0 {
 		if err := db.First(&job, matchID).Error; err == nil {
 			match = repository.JobMatch{
-				UserID:   userID,
-				JobID:    job.ID,
-				FitScore: 85,
-				Status:   "not_applied",
+				UserID:     userID,
+				JobID:      job.ID,
+				MatchScore: 85,
+				Status:     "not_applied",
 			}
 		}
 	}
