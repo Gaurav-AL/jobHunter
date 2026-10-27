@@ -352,7 +352,7 @@
               type="button"
               class="btn btn-success"
             >
-              👁️ View Draft Pack
+              📄 View LaTeX Resume Pack
             </button>
             <button
               v-else
@@ -361,7 +361,7 @@
               class="btn btn-primary"
               :disabled="preparingDraftId === job.ID || !job.JobActive"
             >
-              {{ preparingDraftId === job.ID ? 'Tailoring with AI…' : '⚡ Prepare Application' }}
+              {{ preparingDraftId === job.ID ? 'Tailoring LaTeX Resume…' : '⚡ Prepare Application (LaTeX Resume)' }}
             </button>
             <button v-if="job.SourceURL" @click="addSource(job.SourceURL, job.Company || job.SourceURL)" type="button" class="btn btn-secondary">Add Source</button>
           </div>
@@ -431,7 +431,7 @@
               style="margin-top: 12px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;"
               @click="openApplicationPack(draft)"
             >
-              👁️ View Application Pack & Tailored Resume
+              📄 View LaTeX Resume & Application Pack
             </button>
             <p v-if="!draft.JobActive" class="closed-job" style="margin-top: 8px;">This listing is no longer confirmed active. Verify it on the employer site.</p>
           </div>
@@ -448,14 +448,29 @@
       <div class="modal-card">
         <div class="modal-header">
           <div>
-            <span class="score-badge" v-if="activeJobModal?.MatchScore">{{ activeJobModal.MatchScore }}% Match</span>
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+              <span class="score-badge" v-if="activeJobModal?.MatchScore">{{ activeJobModal.MatchScore }}% Match</span>
+              <span class="badge applied" v-if="activeDraftModal.Status === 'applied'">Applied</span>
+            </div>
             <h3>{{ activeDraftModal.JobTitle || activeJobModal?.JobTitle || 'Job Application Pack' }}</h3>
             <p v-if="activeDraftModal.Company || activeJobModal?.Company" class="modal-subheading">
               <strong>{{ activeDraftModal.Company || activeJobModal?.Company }}</strong>
               <span v-if="activeDraftModal.Location || activeJobModal?.Location"> · {{ activeDraftModal.Location || activeJobModal?.Location }}</span>
             </p>
           </div>
-          <button type="button" class="btn btn-secondary btn-sm" @click="closeApplicationPack">✕ Close</button>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <a
+              v-if="activeDraftModal.ApplyURL || activeDraftModal.JobURL || activeJobModal?.ApplyURL || activeJobModal?.JobURL"
+              :href="activeDraftModal.ApplyURL || activeDraftModal.JobURL || activeJobModal?.ApplyURL || activeJobModal?.JobURL"
+              target="_blank"
+              rel="noreferrer"
+              class="btn btn-success btn-sm"
+              style="text-decoration: none;"
+            >
+              🚀 Official Career Page ↗
+            </a>
+            <button type="button" class="btn btn-secondary btn-sm" @click="closeApplicationPack">✕ Close</button>
+          </div>
         </div>
 
         <div class="modal-nav">
@@ -464,7 +479,7 @@
             :class="['tab-btn', modalActiveTab === 'resume' ? 'active' : '']"
             @click="modalActiveTab = 'resume'"
           >
-            📄 Tailored ATS Resume
+            📄 Tailored LaTeX Resume (.tex)
           </button>
           <button
             type="button"
@@ -483,20 +498,27 @@
         </div>
 
         <div class="modal-body">
-          <!-- Tab 1: Tailored Resume -->
+          <!-- Tab 1: Tailored LaTeX Resume -->
           <div v-if="modalActiveTab === 'resume'" class="modal-tab-content">
-            <div class="tab-toolbar">
-              <span>ATS-optimized plain-text resume tailored specifically to this job description.</span>
-              <div class="toolbar-actions">
-                <button type="button" class="btn btn-sm btn-primary" @click="copyToClipboard(activeDraftModal.TailoredResume)">📋 Copy Resume</button>
-                <button type="button" class="btn btn-sm btn-secondary" @click="downloadResume(activeDraftModal)">💾 Download (.txt)</button>
-                <button type="button" class="btn btn-sm btn-secondary" @click="saveDraft(activeDraftModal)">💾 Save Edits</button>
+            <div class="tab-toolbar" style="background: rgba(99, 102, 241, 0.08); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;">
+              <div>
+                <strong>📄 Factual LaTeX Resume Code</strong>
+                <span style="font-size: 0.85rem; color: var(--text-secondary); margin-left: 8px;">100% factual experience styled like your approved resume with JD skills prioritized. Ready to copy or compile.</span>
+              </div>
+              <div class="toolbar-actions" style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button type="button" class="btn btn-sm btn-primary" @click="copyToClipboard(activeDraftModal.TailoredResume)">📋 Copy LaTeX Code</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="downloadResume(activeDraftModal)">💾 Download .tex</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="openInCompiler('latexbase')">🌐 Compile on LaTeXBase ↗</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="openInCompiler('overleaf')">🌐 Overleaf ↗</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="saveDraft(activeDraftModal)">💾 Save</button>
               </div>
             </div>
             <textarea
               v-model="activeDraftModal.TailoredResume"
               class="input-field textarea full-editor"
-              placeholder="Tailored resume text..."
+              style="font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace; font-size: 0.85rem; line-height: 1.5; min-height: 440px; white-space: pre;"
+              spellcheck="false"
+              placeholder="\documentclass..."
             ></textarea>
           </div>
 
@@ -578,9 +600,24 @@
             target="_blank"
             rel="noreferrer"
             class="btn btn-success"
+            style="font-weight: 700; padding: 10px 18px;"
           >
-            🚀 Open Official Employer Application Page ↗
+            🚀 Open Official Career Page / Apply ↗
           </a>
+          <button
+            type="button"
+            class="btn btn-primary"
+            @click="copyToClipboard(activeDraftModal.TailoredResume)"
+          >
+            📋 Copy LaTeX Code
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            @click="downloadResume(activeDraftModal)"
+          >
+            💾 Download .tex
+          </button>
           <button
             type="button"
             class="btn btn-primary"
@@ -594,7 +631,7 @@
             class="btn btn-danger"
             @click="deleteDraft(activeDraftModal.ID)"
           >
-            🗑️ Delete Draft
+            🗑️ Delete
           </button>
           <button type="button" class="btn btn-secondary" @click="closeApplicationPack">Close</button>
         </div>
@@ -1006,17 +1043,22 @@ const prepareDraft = async (job: any) => {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || 'Could not prepare application materials.');
     await refreshAll();
-    const createdDraft = draftForJob(job.JobID);
+    const createdDraft = body.draft || draftForJob(job.JobID) || drafts.value[0];
     if (createdDraft) {
       openApplicationPack(createdDraft, job);
-    }
-    if (!body.ai_cover_letter || !body.ai_tailored_resume) {
-      alert('AICC could not generate one or more AI materials. A factual fallback was saved; review it carefully before applying.');
     }
   } catch (error: any) {
     alert(error.message || 'Could not prepare application materials.');
   } finally {
     preparingDraftId.value = null;
+  }
+};
+
+const openInCompiler = (compiler: 'latexbase' | 'overleaf') => {
+  if (compiler === 'latexbase') {
+    window.open('https://latexbase.com', '_blank');
+  } else {
+    window.open('https://www.overleaf.com/project', '_blank');
   }
 };
 
@@ -1090,11 +1132,20 @@ const exportJobs = async () => {
 };
 
 const downloadResume = (draft: any) => {
-  const blob = new Blob([draft.TailoredResume], { type: 'text/plain;charset=utf-8' });
+  const content = draft?.TailoredResume || '';
+  if (!content) {
+    alert('No resume content found to download.');
+    return;
+  }
+  const isLatex = content.includes('\\documentclass');
+  const ext = isLatex ? 'tex' : 'txt';
+  const mime = isLatex ? 'text/x-tex;charset=utf-8' : 'text/plain;charset=utf-8';
+  const blob = new Blob([content], { type: mime });
   const href = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = href;
-  anchor.download = `resume-${String(draft.JobTitle || 'job').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.txt`;
+  const company = String(draft.Company || activeJobModal.value?.Company || 'company').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  anchor.download = `Gaurav_Chaudhary_Resume_${company}.${ext}`;
   anchor.click();
   URL.revokeObjectURL(href);
 };

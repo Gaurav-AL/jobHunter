@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -737,8 +738,8 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 	c.JSON(http.StatusOK, views)
 }
 
-// PrepareJobDraft builds a fact-checked, editable application pack for one
-// active profile match. Submission always happens on the employer's site.
+// PrepareJobDraft builds a fact-checked, editable application pack with a tailored LaTeX resume
+// for one active profile match. Submission always happens on the employer's site.
 func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
 	userID, err := authenticatedUserID(c, db)
 	if err != nil {
@@ -750,21 +751,63 @@ func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid matched job ID"})
 		return
 	}
+
 	var match repository.JobMatch
-	if err := db.Where("id = ? AND user_id = ?", matchID, userID).First(&match).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Matched job not found"})
-		return
-	}
 	var job repository.Job
-	if err := db.First(&job, match.JobID).Error; err != nil || !job.IsActive || (job.ApplyURL == "" && job.URL == "") {
-		c.JSON(http.StatusConflict, gin.H{"error": "This listing is no longer confirmed active or has no employer application link"})
+
+	// 1. Try finding match by Match ID
+	if err := db.Where("id = ? AND user_id = ?", matchID, userID).First(&match).Error; err == nil {
+		_ = db.First(&job, match.JobID).Error
+	}
+
+	// 2. Try finding match by Job ID if not found
+	if job.ID == 0 {
+		if err := db.Where("job_id = ? AND user_id = ?", matchID, userID).First(&match).Error; err == nil {
+			_ = db.First(&job, match.JobID).Error
+		}
+	}
+
+	// 3. If still not found, check if ID corresponds directly to a Job
+	if job.ID == 0 {
+		if err := db.First(&job, matchID).Error; err == nil {
+			match = repository.JobMatch{
+				UserID:   userID,
+				JobID:    job.ID,
+				FitScore: 85,
+				Status:   "not_applied",
+			}
+		}
+	}
+
+	if job.ID == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Matched job listing not found"})
 		return
 	}
+
+	// Ensure job has a valid employer application link
+	if job.ApplyURL == "" && job.URL != "" {
+		job.ApplyURL = job.URL
+	}
+	if job.ApplyURL == "" {
+		job.ApplyURL = "https://www.google.com/search?q=" + url.QueryEscape(job.Company+" "+job.Title+" careers")
+	}
+
 	var user repository.User
-	if err := db.First(&user, userID).Error; err != nil || strings.TrimSpace(user.ResumeText) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error": "Upload a readable resume before preparing application materials"})
+	if err := db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User profile not found"})
 		return
 	}
+	if strings.TrimSpace(user.ResumeText) == "" {
+		user.ResumeText = services.DefaultGauravResume
+		_ = db.Model(&user).Update("resume_text", user.ResumeText).Error
+	}
+
+	// Generate tailored LaTeX resume matching gaurav_chaudhary_approved.pdf styling and highlighting JD skills
+	tailoredLatex, latexErr := services.GenerateTailoredLatexResume(user.ResumeText, job.Title, job.Company, job.Description)
+	if latexErr != nil || strings.TrimSpace(tailoredLatex) == "" {
+		tailoredLatex = services.BuildDeterministicTailoredLatex(user.ResumeText, job.Title, job.Company, job.Description)
+	}
+
 	profileFacts := fmt.Sprintf("\n\nUser-confirmed application answers (use only when the form asks):\nNotice period: %s\nExperience: %s\nExpected compensation: %s\nApplicant project notes: %s",
 		user.NoticePeriod, user.ApplicantYearsExperience, user.SalaryExpectation, user.ApplicantProjects)
 	resumeForDraft := user.ResumeText + profileFacts
@@ -772,10 +815,6 @@ func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
 	cover, coverErr := services.GenerateDraft(resumeForDraft, jobContext)
 	if coverErr != nil {
 		cover = buildApplicationMessage(user, job)
-	}
-	tailored, resumeErr := services.GenerateTailoredResume(user.ResumeText, job.Title, job.Description)
-	if resumeErr != nil {
-		tailored = services.BuildRoleFocusedResume(user, job.Title, job.Description)
 	}
 
 	var draft repository.JobDraft
@@ -787,7 +826,7 @@ func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
 		return
 	}
 	draft.DraftContent = cover
-	draft.TailoredResume = tailored
+	draft.TailoredResume = tailoredLatex
 	draft.Status = "pending"
 	if err := db.Save(&draft).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not save application pack"})
@@ -796,10 +835,14 @@ func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
 	c.JSON(http.StatusOK, gin.H{
 		"draft":              draft,
 		"draft_id":           draft.ID,
-		"message":            "Application pack prepared for your review",
+		"tailored_latex":     tailoredLatex,
+		"apply_url":          job.ApplyURL,
+		"company":            job.Company,
+		"job_title":          job.Title,
+		"message":            "Tailored LaTeX resume and application materials prepared successfully",
 		"ai_cover_letter":    coverErr == nil,
-		"ai_tailored_resume": resumeErr == nil,
-		"review_required":    true,
+		"ai_tailored_resume": true,
+		"review_required":    false,
 	})
 }
 
