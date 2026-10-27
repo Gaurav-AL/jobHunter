@@ -57,9 +57,12 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 
 	// Drafts
 	api.GET("/drafts", func(c *gin.Context) { GetDrafts(c, db) })
+	api.DELETE("/drafts/:id", func(c *gin.Context) { DeleteDraft(c, db) })
+	api.POST("/drafts/cleanup-irrelevant", func(c *gin.Context) { CleanupIrrelevantDrafts(c, db) })
 	api.PATCH("/drafts/:id", func(c *gin.Context) { UpdateDraftContent(c, db) })
 	api.POST("/drafts/:id/status", func(c *gin.Context) { UpdateDraftStatus(c, db) })
 	api.GET("/jobs/matches", func(c *gin.Context) { GetMatchedJobs(c, db) })
+	api.POST("/jobs/recalculate-matches", func(c *gin.Context) { RecalculateMatches(c, db) })
 	api.POST("/jobs/matches/:id/draft", func(c *gin.Context) { PrepareJobDraft(c, db) })
 	api.POST("/jobs/matches/:id/status", func(c *gin.Context) { UpdateMatchStatus(c, db) })
 	api.GET("/jobs/export.xlsx", func(c *gin.Context) { ExportMatchedJobsXLSX(c, db) })
@@ -280,6 +283,9 @@ func ScrapeResume(c *gin.Context, db *gorm.DB) {
 	var updatedUser repository.User
 	db.First(&updatedUser, userID)
 
+	// Immediately re-calculate matches based on the fresh technical profile
+	go recalculateUserMatches(db, updatedUser)
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":           "Resume parsed and profile updated successfully",
 		"warning":           extractionWarning,
@@ -447,6 +453,7 @@ func UploadResume(c *gin.Context, db *gorm.DB) {
 
 	var updatedUser repository.User
 	_ = db.First(&updatedUser, userID).Error
+	go recalculateUserMatches(db, updatedUser)
 	c.JSON(http.StatusOK, gin.H{
 		"message":           "Resume uploaded successfully",
 		"path":              filePath,
@@ -644,21 +651,28 @@ func AddSource(c *gin.Context, db *gorm.DB) {
 	c.JSON(http.StatusCreated, source)
 }
 
+func validTimePtr(t time.Time) *time.Time {
+	if t.IsZero() || t.Year() < 2000 {
+		return nil
+	}
+	return &t
+}
+
 type DraftView struct {
-	ID             uint      `json:"ID"`
-	JobID          uint      `json:"JobID"`
-	DraftContent   string    `json:"DraftContent"`
-	TailoredResume string    `json:"TailoredResume"`
-	Status         string    `json:"Status"`
-	JobTitle       string    `json:"JobTitle"`
-	JobURL         string    `json:"JobURL"`
-	ApplyURL       string    `json:"ApplyURL"`
-	Location       string    `json:"Location"`
-	Company        string    `json:"Company"`
-	Provider       string    `json:"Provider"`
-	SourceName     string    `json:"SourceName"`
-	JobActive      bool      `json:"JobActive"`
-	LastSeenAt     time.Time `json:"LastSeenAt"`
+	ID             uint       `json:"ID"`
+	JobID          uint       `json:"JobID"`
+	DraftContent   string     `json:"DraftContent"`
+	TailoredResume string     `json:"TailoredResume"`
+	Status         string     `json:"Status"`
+	JobTitle       string     `json:"JobTitle"`
+	JobURL         string     `json:"JobURL"`
+	ApplyURL       string     `json:"ApplyURL"`
+	Location       string     `json:"Location"`
+	Company        string     `json:"Company"`
+	Provider       string     `json:"Provider"`
+	SourceName     string     `json:"SourceName"`
+	JobActive      bool       `json:"JobActive"`
+	LastSeenAt     *time.Time `json:"LastSeenAt"`
 }
 
 type MatchedJobView struct {
@@ -669,7 +683,7 @@ type MatchedJobView struct {
 	ApplyURL       string     `json:"ApplyURL"`
 	Location       string     `json:"Location"`
 	PublishedAt    *time.Time `json:"PublishedAt"`
-	LastSeenAt     time.Time  `json:"LastSeenAt"`
+	LastSeenAt     *time.Time `json:"LastSeenAt"`
 	JobActive      bool       `json:"JobActive"`
 	Company        string     `json:"Company"`
 	Provider       string     `json:"Provider"`
@@ -717,7 +731,7 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 			Provider:       job.Provider,
 			SourceName:     source.Name,
 			JobActive:      job.IsActive,
-			LastSeenAt:     job.LastSeenAt,
+			LastSeenAt:     validTimePtr(job.LastSeenAt),
 		})
 	}
 	c.JSON(http.StatusOK, views)
@@ -779,7 +793,14 @@ func PrepareJobDraft(c *gin.Context, db *gorm.DB) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not save application pack"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"draft_id": draft.ID, "message": "Application pack prepared for your review", "ai_cover_letter": coverErr == nil, "ai_tailored_resume": resumeErr == nil, "review_required": true})
+	c.JSON(http.StatusOK, gin.H{
+		"draft":              draft,
+		"draft_id":           draft.ID,
+		"message":            "Application pack prepared for your review",
+		"ai_cover_letter":    coverErr == nil,
+		"ai_tailored_resume": resumeErr == nil,
+		"review_required":    true,
+	})
 }
 
 func buildApplicationMessage(user repository.User, job repository.Job) string {
@@ -824,7 +845,7 @@ func GetMatchedJobs(c *gin.Context, db *gorm.DB) {
 			ApplyURL:       job.ApplyURL,
 			Location:       job.Location,
 			PublishedAt:    job.PublishedAt,
-			LastSeenAt:     job.LastSeenAt,
+			LastSeenAt:     validTimePtr(job.LastSeenAt),
 			JobActive:      job.IsActive,
 			Company:        job.Company,
 			Provider:       job.Provider,
@@ -916,6 +937,96 @@ func UpdateDraftStatus(c *gin.Context, db *gorm.DB) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Status updated"})
+}
+
+func DeleteDraft(c *gin.Context, db *gorm.DB) {
+	draftID := c.Param("id")
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	result := db.Where("id = ? AND user_id = ?", draftID, userID).Delete(&repository.JobDraft{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete draft"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Draft deleted successfully"})
+}
+
+func CleanupIrrelevantDrafts(c *gin.Context, db *gorm.DB) {
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var user repository.User
+	if err := db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User not found"})
+		return
+	}
+	var drafts []repository.JobDraft
+	db.Where("user_id = ?", userID).Find(&drafts)
+	deleted := 0
+	for _, draft := range drafts {
+		var job repository.Job
+		if err := db.First(&job, draft.JobID).Error; err != nil {
+			db.Delete(&draft)
+			deleted++
+			continue
+		}
+		match := services.MatchJobToProfile(user, job)
+		if match.Score < 50 {
+			db.Delete(&draft)
+			deleted++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Removed %d irrelevant drafts", deleted), "deleted_count": deleted})
+}
+
+func RecalculateMatches(c *gin.Context, db *gorm.DB) {
+	userID, err := authenticatedUserID(c, db)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	var user repository.User
+	if err := db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User not found"})
+		return
+	}
+	matched := recalculateUserMatches(db, user)
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Calculated %d relevant matches", matched), "matched_count": matched})
+}
+
+func recalculateUserMatches(db *gorm.DB, user repository.User) int {
+	var jobs []repository.Job
+	if err := db.Where("is_active = ?", true).Find(&jobs).Error; err != nil {
+		return 0
+	}
+	matchedCount := 0
+	for _, job := range jobs {
+		match := services.MatchJobToProfile(user, job)
+		if match.Score < 50 {
+			db.Where("user_id = ? AND job_id = ?", user.ID, job.ID).Delete(&repository.JobMatch{})
+			continue
+		}
+		skillNames := strings.Join(match.MatchedSkills, ", ")
+		requiredSkills := strings.Join(services.JobSkillsAsked(job), ", ")
+		var record repository.JobMatch
+		res := db.Where("user_id = ? AND job_id = ?", user.ID, job.ID).FirstOrCreate(&record, repository.JobMatch{
+			UserID: user.ID, JobID: job.ID, MatchScore: match.Score, MatchReason: match.Reason,
+			MatchedSkills: skillNames, RequiredSkills: requiredSkills, Status: "not_applied",
+		})
+		if res.RowsAffected == 0 {
+			db.Model(&record).Updates(map[string]any{
+				"match_score": match.Score, "match_reason": match.Reason,
+				"matched_skills": skillNames, "required_skills": requiredSkills,
+			})
+		}
+		matchedCount++
+	}
+	return matchedCount
 }
 
 func IntegrationHealth(c *gin.Context, db *gorm.DB) {
@@ -1079,7 +1190,7 @@ func GetDashboard(c *gin.Context, db *gorm.DB) {
 			ApplyURL:       job.ApplyURL,
 			Location:       job.Location,
 			PublishedAt:    job.PublishedAt,
-			LastSeenAt:     job.LastSeenAt,
+			LastSeenAt:     validTimePtr(job.LastSeenAt),
 			JobActive:      job.IsActive,
 			Company:        job.Company,
 			Provider:       job.Provider,

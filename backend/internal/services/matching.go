@@ -63,7 +63,57 @@ var stopWords = map[string]bool{
 	"career": true, "opening": true, "ready": true, "review": true,
 }
 
+var nonTechnicalKeywords = []string{
+	"account executive", "sales", "business development", "bdr", "sdr",
+	"abuse investigator", "fraud investigator", "investigator",
+	"recruiter", "talent acquisition", "sourcer", "human resources", "hr ", "people partner",
+	"legal", "counsel", "paralegal", "compliance officer",
+	"accounting", "bookkeeper", "payroll", "auditor",
+	"office manager", "executive assistant", "receptionist",
+	"copywriter", "content writer", "seo specialist",
+	"customer support", "customer success", "support agent", "support specialist",
+	"developer blog", "blog", "community manager", "social media", "event coordinator",
+}
+
+var engineeringTitleKeywords = []string{
+	"engineer", "developer", "programmer", "sde", "backend", "frontend",
+	"fullstack", "full stack", "software", "architect", "devops", "sre",
+	"platform", "systems", "infrastructure", "cloud", "data", "ml", "machine learning",
+	"distributed", "security engineer", "qa engineer", "tech lead",
+}
+
 func MatchJobToProfile(user repository.User, job repository.Job) MatchResult {
+	lowerTitle := strings.ToLower(job.Title)
+
+	// Strict filter 1: Instantly disqualify non-engineering roles
+	targetRolesLower := strings.ToLower(user.TargetRoles)
+	for _, term := range nonTechnicalKeywords {
+		if strings.Contains(lowerTitle, term) && !strings.Contains(targetRolesLower, term) {
+			return MatchResult{Score: 0, Reason: "Excluded: Non-technical role (" + term + ") incompatible with engineering profile."}
+		}
+	}
+
+	// Strict filter 2: Role title must exhibit engineering/technical affinity
+	isEngineering := false
+	for _, keyword := range engineeringTitleKeywords {
+		if strings.Contains(lowerTitle, keyword) {
+			isEngineering = true
+			break
+		}
+	}
+	if !isEngineering && targetRolesLower != "" {
+		for _, role := range strings.Split(targetRolesLower, ",") {
+			role = strings.TrimSpace(role)
+			if role != "" && strings.Contains(lowerTitle, role) {
+				isEngineering = true
+				break
+			}
+		}
+	}
+	if !isEngineering {
+		return MatchResult{Score: 0, Reason: "Excluded: Role title is not an engineering or software position."}
+	}
+
 	profileText := strings.Join([]string{
 		user.ResumeText,
 		user.ProfileSummary,
@@ -89,73 +139,55 @@ func MatchJobToProfile(user repository.User, job repository.Job) MatchResult {
 			}
 		}
 	}
+
 	skillFit := 0
 	if len(jobSkills) > 0 {
-		skillFit = len(matchedSkills) * 65 / len(jobSkills)
-	}
-	if len(profileSkills) == 0 {
-		skillFit = 0
-	}
-
-	// Role overlap is measured against the title so long resumes do not
-	// overwhelm the score and drive every result to 100%.
-	roleBasis := user.TargetRoles
-	if strings.TrimSpace(roleBasis) == "" {
-		roleBasis = user.ProfileSummary
-	}
-	titleTokens := weightedTokens(job.Title)
-	roleTokens := weightedTokens(roleBasis)
-	roleHits := 0
-	for token := range titleTokens {
-		if roleTokens[token] > 0 {
-			roleHits++
-		}
-	}
-	roleFit := 0
-	if len(titleTokens) > 0 {
-		roleFit = roleHits * 25 / len(titleTokens)
-	}
-	if roleHits == 0 && strings.TrimSpace(roleBasis) == "" {
-		roleFit = 8
+		skillFit = len(matchedSkills) * 55 / len(jobSkills)
+	} else if len(matchedSkills) > 0 {
+		skillFit = 30
+	} else {
+		skillFit = 15
 	}
 
-	score := skillFit + roleFit
-	// Provider quality is a small tie-breaker; relevance remains dominant.
-	switch strings.ToLower(job.Provider) {
-	case "greenhouse":
-		score += 2
-	case "lever", "ashby":
-		score += 1
-	case "himalayas", "jobicy":
-		score -= 2
+	// Technical role affinity
+	roleFit := 15
+	if strings.Contains(lowerTitle, "backend") || strings.Contains(lowerTitle, "sde") || strings.Contains(lowerTitle, "software engineer") || strings.Contains(lowerTitle, "systems") || strings.Contains(lowerTitle, "distributed") || strings.Contains(lowerTitle, "golang") || strings.Contains(lowerTitle, "go ") {
+		roleFit = 30
+	} else if strings.Contains(lowerTitle, "full stack") || strings.Contains(lowerTitle, "fullstack") || strings.Contains(lowerTitle, "platform") {
+		roleFit = 25
 	}
-	// Treat India as a preference, not a hard filter: include remote listings and
-	// reduce explicit non-India matches while preserving other strong-fit roles.
+
+	// Location alignment
+	locFit := 0
+	location := strings.ToLower(job.Location + " " + job.Description)
 	if prefersIndia(user.Location) {
-		location := strings.ToLower(job.Location)
 		switch {
-		case strings.Contains(location, "india"):
-			score += 8
-		case containsAny(location, "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "chennai", "delhi", "noida", "gurugram", "gurgaon", "kolkata", "ahmedabad", "kochi", "coimbatore", "jaipur", "indore"):
-			score += 7
-		case location == "":
-			// Missing location is unknown, so it receives no preference bonus.
-		case strings.Contains(location, "remote") || strings.Contains(location, "anywhere"):
-			score += 3
+		case strings.Contains(location, "india") || containsAny(location, "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "chennai", "delhi", "noida", "gurugram", "gurgaon"):
+			locFit = 15
+		case strings.Contains(location, "remote") || strings.Contains(location, "anywhere") || strings.Contains(location, "apac"):
+			locFit = 12
 		default:
-			score -= 5
+			// Explicit on-site abroad
+			locFit = -10
 		}
 	}
 
+	score := skillFit + roleFit + locFit
 	if score > 100 {
 		score = 100
 	}
-	reason := "Resume fit from listed skill coverage and target role overlap."
+	if score < 0 {
+		score = 0
+	}
+
+	reason := "Engineering role match"
 	if len(matchedSkills) > 0 {
 		reason = "Matched skills: " + strings.Join(matchedSkills, ", ") + "."
+	} else {
+		reason = "Title alignment with software development profile."
 	}
-	if score < 25 {
-		reason = "Low resume/profile overlap. " + reason
+	if score < 50 {
+		reason = "Low skill overlap. " + reason
 	}
 
 	return MatchResult{Score: score, Reason: reason, MatchedSkills: matchedSkills}

@@ -304,6 +304,15 @@
             <option :value="70">Score ≥ 70% (Top Fit)</option>
             <option :value="80">Score ≥ 80% (Best Fit)</option>
           </select>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm"
+            :disabled="recalculatingMatches"
+            @click="recalculateMatches"
+            title="Recalculate match scores based on your technical profile"
+          >
+            {{ recalculatingMatches ? 'Evaluating…' : '⚡ Re-evaluate Matches' }}
+          </button>
         </div>
       </div>
 
@@ -321,49 +330,15 @@
               <h4>{{ job.JobTitle || `Job ID: ${job.JobID}` }}</h4>
               <span class="score-badge">{{ job.MatchScore }}%</span>
             </div>
-            <a v-if="job.ApplyURL || job.JobURL" :href="job.ApplyURL || job.JobURL" target="_blank" rel="noreferrer">Open official listing / application</a>
+            <a v-if="job.ApplyURL || job.JobURL" :href="job.ApplyURL || job.JobURL" target="_blank" rel="noreferrer">Open official listing / application ↗</a>
             <p v-if="job.Company"><strong>{{ job.Company }}</strong></p>
             <small v-if="job.Provider || job.SourceName">Source: {{ job.Provider || job.SourceName }}</small>
             <p v-if="job.Location">{{ job.Location }}</p>
             <p>{{ job.MatchReason }}</p>
             <p v-if="job.RequiredSkills" class="skill-hits"><strong>Skills asked:</strong> {{ job.RequiredSkills }}</p>
             <p v-if="job.MatchedSkills" class="skill-hits"><strong>Your matching skills:</strong> {{ job.MatchedSkills }}</p>
-            <small v-if="job.LastSeenAt">Confirmed on source board: {{ new Date(job.LastSeenAt).toLocaleString() }}</small>
-          </div>
-
-          <!-- Inline pre-prepared draft viewer -->
-          <div v-if="draftForJob(job.JobID)" class="inline-draft-panel">
-            <div class="inline-draft-header">
-              <span class="draft-ready-badge">✅ Draft ready</span>
-              <button type="button" class="btn btn-sm btn-ghost" @click="toggleDraftPanel(job.JobID)">
-                {{ expandedDraftJobId === job.JobID ? 'Collapse ▲' : 'View Draft ▼' }}
-              </button>
-            </div>
-            <template v-if="expandedDraftJobId === job.JobID">
-              <details class="draft-details" open>
-                <summary>Application message</summary>
-                <textarea v-model="draftForJob(job.JobID).DraftContent" class="input-field textarea draft-editor" placeholder="Application message"></textarea>
-                <div class="draft-copy-row">
-                  <button type="button" class="btn btn-sm btn-secondary" @click="copyToClipboard(draftForJob(job.JobID).DraftContent)">Copy message</button>
-                  <button type="button" class="btn btn-sm btn-primary" @click="saveDraft(draftForJob(job.JobID))">Save edits</button>
-                </div>
-              </details>
-              <details class="draft-details">
-                <summary>Tailored resume</summary>
-                <textarea v-model="draftForJob(job.JobID).TailoredResume" class="input-field textarea draft-editor" placeholder="Tailored resume"></textarea>
-                <div class="draft-copy-row">
-                  <button type="button" class="btn btn-sm btn-secondary" @click="copyToClipboard(draftForJob(job.JobID).TailoredResume)">Copy resume</button>
-                  <button type="button" class="btn btn-sm btn-secondary" @click="downloadResume(draftForJob(job.JobID))">Download (.txt)</button>
-                  <button type="button" class="btn btn-sm btn-primary" @click="saveDraft(draftForJob(job.JobID))">Save edits</button>
-                </div>
-              </details>
-              <div class="draft-submit-row" v-if="draftForJob(job.JobID).Status === 'pending'">
-                <a v-if="job.ApplyURL || job.JobURL" :href="job.ApplyURL || job.JobURL" target="_blank" rel="noreferrer" class="btn btn-success">Open employer page to submit →</a>
-                <button type="button" class="btn btn-primary" @click="markDraftApplied(draftForJob(job.JobID))">I submitted the application</button>
-                <button type="button" class="btn btn-danger" @click="updateStatus(draftForJob(job.JobID).ID, 'rejected')">Dismiss</button>
-              </div>
-              <p v-else class="draft-status-note">Draft status: <strong>{{ draftForJob(job.JobID).Status }}</strong></p>
-            </template>
+            <small v-if="formatJobDate(job.LastSeenAt)">Confirmed active: {{ formatJobDate(job.LastSeenAt) }}</small>
+            <small v-else>Confirmed active listing</small>
           </div>
 
           <div class="match-actions">
@@ -371,8 +346,22 @@
             <button @click="setMatchStatus(job, job.Status === 'applied' ? 'not_applied' : 'applied')" type="button" :class="['btn', job.Status === 'applied' ? 'btn-secondary' : 'btn-success']" :disabled="updatingMatchId === job.ID || (!job.JobActive && job.Status !== 'applied')">
               {{ updatingMatchId === job.ID ? 'Saving...' : job.Status === 'applied' ? 'Undo applied' : 'Mark applied' }}
             </button>
-            <button @click="prepareDraft(job)" type="button" class="btn btn-primary" :disabled="preparingDraftId === job.ID || !job.JobActive">
-              {{ preparingDraftId === job.ID ? 'Preparing…' : draftForJob(job.JobID) ? 'Re-prepare' : 'Prepare application' }}
+            <button
+              v-if="draftForJob(job.JobID)"
+              @click="openApplicationPack(draftForJob(job.JobID), job)"
+              type="button"
+              class="btn btn-success"
+            >
+              👁️ View Draft Pack
+            </button>
+            <button
+              v-else
+              @click="prepareDraft(job)"
+              type="button"
+              class="btn btn-primary"
+              :disabled="preparingDraftId === job.ID || !job.JobActive"
+            >
+              {{ preparingDraftId === job.ID ? 'Tailoring with AI…' : '⚡ Prepare Application' }}
             </button>
             <button v-if="job.SourceURL" @click="addSource(job.SourceURL, job.Company || job.SourceURL)" type="button" class="btn btn-secondary">Add Source</button>
           </div>
@@ -404,7 +393,17 @@
       <div class="section-header">
         <div>
           <h3>Your job drafts</h3>
-          <p>Review and edit each resume and application note, then submit it through the employer’s official application page. Preparation never submits an application.</p>
+          <p>Review and edit each resume and application note, then submit it through the employer’s official application page.</p>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button
+            @click="cleanupIrrelevantDrafts"
+            class="btn btn-sm btn-danger"
+            :disabled="cleaningDrafts"
+            title="Purge drafts for non-technical roles or jobs that no longer match"
+          >
+            {{ cleaningDrafts ? 'Purging…' : '🗑️ Purge Irrelevant Drafts' }}
+          </button>
         </div>
       </div>
 
@@ -419,29 +418,188 @@
               <h4>{{ draft.JobTitle || `Job ID: ${draft.JobID}` }}</h4>
               <span :class="['badge', draft.Status]">{{ draft.Status }}</span>
             </div>
-            <a v-if="draft.ApplyURL || draft.JobURL" :href="draft.ApplyURL || draft.JobURL" target="_blank" rel="noreferrer">Open official application page</a>
+            <a v-if="draft.ApplyURL || draft.JobURL" :href="draft.ApplyURL || draft.JobURL" target="_blank" rel="noreferrer">Open official application page ↗</a>
             <p v-if="draft.Company"><strong>{{ draft.Company }}</strong><span v-if="draft.SourceName"> · via {{ draft.SourceName }}</span></p>
             <small v-if="draft.Provider">Source: {{ draft.Provider }}</small>
             <p v-if="draft.Location">{{ draft.Location }}</p>
-            <small v-if="draft.LastSeenAt">Last confirmed listed: {{ new Date(draft.LastSeenAt).toLocaleString() }}</small>
-            <details class="draft-details">
-              <summary>Review tailored resume</summary>
-              <textarea v-model="draft.TailoredResume" class="input-field textarea draft-editor" placeholder="Tailored resume draft"></textarea>
-              <div class="actions"><button v-if="draft.TailoredResume" @click="downloadResume(draft)" type="button" class="btn btn-secondary">Download resume draft (.txt)</button><button @click="saveDraft(draft)" type="button" class="btn btn-primary">Save edits</button></div>
-            </details>
-            <details class="draft-details">
-              <summary>Review application message</summary>
-              <textarea v-model="draft.DraftContent" class="input-field textarea draft-editor" placeholder="Application message"></textarea>
-            </details>
-            <p v-if="!draft.JobActive" class="closed-job">This listing is no longer confirmed active. Verify it on the employer site.</p>
+            <small v-if="formatJobDate(draft.LastSeenAt)">Last confirmed listed: {{ formatJobDate(draft.LastSeenAt) }}</small>
+            <small v-else>Confirmed active listing</small>
+
+            <button
+              type="button"
+              class="btn btn-primary btn-block"
+              style="margin-top: 12px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;"
+              @click="openApplicationPack(draft)"
+            >
+              👁️ View Application Pack & Tailored Resume
+            </button>
+            <p v-if="!draft.JobActive" class="closed-job" style="margin-top: 8px;">This listing is no longer confirmed active. Verify it on the employer site.</p>
           </div>
-          <div class="actions" v-if="draft.Status === 'pending'">
-            <button @click="updateStatus(draft.ID, 'applied')" class="btn btn-success" :disabled="!draft.JobActive || !(draft.ApplyURL || draft.JobURL)">I submitted the application</button>
-            <button @click="updateStatus(draft.ID, 'rejected')" class="btn btn-danger">Dismiss</button>
+          <div class="actions" style="margin-top: 10px;">
+            <button v-if="draft.Status === 'pending'" @click="updateStatus(draft.ID, 'applied')" class="btn btn-success" :disabled="!draft.JobActive || !(draft.ApplyURL || draft.JobURL)">I submitted</button>
+            <button @click="deleteDraft(draft.ID)" class="btn btn-danger">Delete</button>
           </div>
         </article>
       </div>
     </section>
+
+    <!-- Global Application Pack & Tailored Resume Modal -->
+    <div v-if="activeDraftModal" class="modal-backdrop" @click.self="closeApplicationPack">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <span class="score-badge" v-if="activeJobModal?.MatchScore">{{ activeJobModal.MatchScore }}% Match</span>
+            <h3>{{ activeDraftModal.JobTitle || activeJobModal?.JobTitle || 'Job Application Pack' }}</h3>
+            <p v-if="activeDraftModal.Company || activeJobModal?.Company" class="modal-subheading">
+              <strong>{{ activeDraftModal.Company || activeJobModal?.Company }}</strong>
+              <span v-if="activeDraftModal.Location || activeJobModal?.Location"> · {{ activeDraftModal.Location || activeJobModal?.Location }}</span>
+            </p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" @click="closeApplicationPack">✕ Close</button>
+        </div>
+
+        <div class="modal-nav">
+          <button
+            type="button"
+            :class="['tab-btn', modalActiveTab === 'resume' ? 'active' : '']"
+            @click="modalActiveTab = 'resume'"
+          >
+            📄 Tailored ATS Resume
+          </button>
+          <button
+            type="button"
+            :class="['tab-btn', modalActiveTab === 'message' ? 'active' : '']"
+            @click="modalActiveTab = 'message'"
+          >
+            ✉️ Application Note / Cover Letter
+          </button>
+          <button
+            type="button"
+            :class="['tab-btn', modalActiveTab === 'autofill' ? 'active' : '']"
+            @click="modalActiveTab = 'autofill'"
+          >
+            📋 1-Click Form Autofill Answers
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Tab 1: Tailored Resume -->
+          <div v-if="modalActiveTab === 'resume'" class="modal-tab-content">
+            <div class="tab-toolbar">
+              <span>ATS-optimized plain-text resume tailored specifically to this job description.</span>
+              <div class="toolbar-actions">
+                <button type="button" class="btn btn-sm btn-primary" @click="copyToClipboard(activeDraftModal.TailoredResume)">📋 Copy Resume</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="downloadResume(activeDraftModal)">💾 Download (.txt)</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="saveDraft(activeDraftModal)">💾 Save Edits</button>
+              </div>
+            </div>
+            <textarea
+              v-model="activeDraftModal.TailoredResume"
+              class="input-field textarea full-editor"
+              placeholder="Tailored resume text..."
+            ></textarea>
+          </div>
+
+          <!-- Tab 2: Application Note -->
+          <div v-if="modalActiveTab === 'message'" class="modal-tab-content">
+            <div class="tab-toolbar">
+              <span>Personalized application message highlighting your verified experience.</span>
+              <div class="toolbar-actions">
+                <button type="button" class="btn btn-sm btn-primary" @click="copyToClipboard(activeDraftModal.DraftContent)">📋 Copy Message</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="saveDraft(activeDraftModal)">💾 Save Edits</button>
+              </div>
+            </div>
+            <textarea
+              v-model="activeDraftModal.DraftContent"
+              class="input-field textarea full-editor"
+              placeholder="Application message..."
+            ></textarea>
+          </div>
+
+          <!-- Tab 3: Form Autofill Answers -->
+          <div v-if="modalActiveTab === 'autofill'" class="modal-tab-content">
+            <div class="tab-toolbar">
+              <span>Click any field to copy answers directly into the employer's application form.</span>
+              <button type="button" class="btn btn-sm btn-primary" @click="copyFullAutofillKit">🚀 Copy All Answers</button>
+            </div>
+            <div class="autofill-grid-modal">
+              <div class="modal-field-card" @click="copyToClipboard(applicantFullName)">
+                <label>Full Name</label>
+                <div>{{ applicantFullName || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.email)">
+                <label>Email Address</label>
+                <div>{{ profile.email || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.applicant_phone)">
+                <label>Phone Number</label>
+                <div>{{ profile.applicant_phone || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.location)">
+                <label>Current Location</label>
+                <div>{{ profile.location || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.applicant_years_experience)">
+                <label>Total Experience</label>
+                <div>{{ profile.applicant_years_experience || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.notice_period)">
+                <label>Notice Period</label>
+                <div>{{ profile.notice_period || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.salary_expectation)">
+                <label>Salary Expectation</label>
+                <div>{{ profile.salary_expectation || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.applicant_linkedin)">
+                <label>LinkedIn</label>
+                <div>{{ profile.applicant_linkedin || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.applicant_github)">
+                <label>GitHub</label>
+                <div>{{ profile.applicant_github || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card" @click="copyToClipboard(profile.applicant_website)">
+                <label>Portfolio / Website</label>
+                <div>{{ profile.applicant_website || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+              <div class="modal-field-card span-all" @click="copyToClipboard(profile.applicant_projects)">
+                <label>Featured Project Highlights</label>
+                <div>{{ profile.applicant_projects || 'Not set' }} <span>📋 Copy</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <a
+            v-if="activeDraftModal.ApplyURL || activeDraftModal.JobURL || activeJobModal?.ApplyURL || activeJobModal?.JobURL"
+            :href="activeDraftModal.ApplyURL || activeDraftModal.JobURL || activeJobModal?.ApplyURL || activeJobModal?.JobURL"
+            target="_blank"
+            rel="noreferrer"
+            class="btn btn-success"
+          >
+            🚀 Open Official Employer Application Page ↗
+          </a>
+          <button
+            type="button"
+            class="btn btn-primary"
+            v-if="activeDraftModal.Status === 'pending'"
+            @click="markDraftApplied(activeDraftModal); closeApplicationPack();"
+          >
+            ✅ I Submitted This Application
+          </button>
+          <button
+            type="button"
+            class="btn btn-danger"
+            @click="deleteDraft(activeDraftModal.ID)"
+          >
+            🗑️ Delete Draft
+          </button>
+          <button type="button" class="btn btn-secondary" @click="closeApplicationPack">Close</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -468,11 +626,16 @@ const newSourceUrl = ref('');
 const newSourceName = ref('');
 const updatingMatchId = ref<number | null>(null);
 const preparingDraftId = ref<number | null>(null);
-const expandedDraftJobId = ref<number | null>(null);
 const showAutofillKit = ref(false);
 const jobSearchQuery = ref('');
 const jobStatusFilter = ref<'all' | 'not_applied' | 'applied'>('all');
 const jobScoreFilter = ref<number>(0);
+
+const activeDraftModal = ref<any>(null);
+const activeJobModal = ref<any>(null);
+const modalActiveTab = ref<'resume' | 'message' | 'autofill'>('resume');
+const cleaningDrafts = ref(false);
+const recalculatingMatches = ref(false);
 
 const profile = reactive({
   email: '',
@@ -774,6 +937,68 @@ const updateStatus = async (id: number, status: string) => {
   if (res.ok) await refreshAll();
 };
 
+const formatJobDate = (dateStr: string | null | undefined): string => {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime()) || d.getFullYear() < 2000) return '';
+  return d.toLocaleString();
+};
+
+const openApplicationPack = (draft: any, job?: any) => {
+  activeDraftModal.value = draft;
+  activeJobModal.value = job || matchedJobs.value.find((j: any) => j.JobID === draft.JobID) || null;
+  modalActiveTab.value = 'resume';
+};
+
+const closeApplicationPack = () => {
+  activeDraftModal.value = null;
+  activeJobModal.value = null;
+};
+
+const cleanupIrrelevantDrafts = async () => {
+  if (!confirm('Purge all non-technical and irrelevant drafts from your dashboard?')) return;
+  cleaningDrafts.value = true;
+  try {
+    const res = await apiFetch('/api/drafts/cleanup-irrelevant', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    alert(data.message || 'Irrelevant drafts cleaned up.');
+    await refreshAll();
+  } catch (err: any) {
+    alert(err.message || 'Failed to cleanup drafts.');
+  } finally {
+    cleaningDrafts.value = false;
+  }
+};
+
+const recalculateMatches = async () => {
+  recalculatingMatches.value = true;
+  try {
+    const res = await apiFetch('/api/jobs/recalculate-matches', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    alert(data.message || 'Matches re-evaluated based on your profile.');
+    await refreshAll();
+  } catch (err: any) {
+    alert(err.message || 'Failed to re-evaluate matches.');
+  } finally {
+    recalculatingMatches.value = false;
+  }
+};
+
+const deleteDraft = async (draftId: number) => {
+  if (!confirm('Permanently delete this draft?')) return;
+  try {
+    const res = await apiFetch(`/api/drafts/${draftId}`, { method: 'DELETE' });
+    if (res.ok) {
+      if (activeDraftModal.value?.ID === draftId) {
+        closeApplicationPack();
+      }
+      await refreshAll();
+    }
+  } catch (err: any) {
+    alert(err.message || 'Failed to delete draft.');
+  }
+};
+
 const prepareDraft = async (job: any) => {
   preparingDraftId.value = job.ID;
   try {
@@ -781,8 +1006,10 @@ const prepareDraft = async (job: any) => {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || 'Could not prepare application materials.');
     await refreshAll();
-    const draftElement = document.querySelector('.drafts-section:last-of-type');
-    draftElement?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const createdDraft = draftForJob(job.JobID);
+    if (createdDraft) {
+      openApplicationPack(createdDraft, job);
+    }
     if (!body.ai_cover_letter || !body.ai_tailored_resume) {
       alert('AICC could not generate one or more AI materials. A factual fallback was saved; review it carefully before applying.');
     }
@@ -813,11 +1040,6 @@ const setMatchStatus = async (job: any, status: string) => {
 
 /** Return the pre-prepared draft (if any) for a given job ID. */
 const draftForJob = (jobId: number) => drafts.value.find((d: any) => d.JobID === jobId) ?? null;
-
-/** Toggle the inline draft viewer for a matched-job card. */
-const toggleDraftPanel = (jobId: number) => {
-  expandedDraftJobId.value = expandedDraftJobId.value === jobId ? null : jobId;
-};
 
 /** Copy text to clipboard with a transient user-facing confirmation. */
 const copyToClipboard = async (text: string) => {
@@ -1266,5 +1488,162 @@ button:disabled {
   margin-bottom: 0;
   padding: 0.55rem 0.85rem;
   background: rgba(15, 23, 42, 0.7);
+}
+
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 1rem;
+}
+.modal-card {
+  background: #111827;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 1rem;
+  width: 100%;
+  max-width: 900px;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);
+  animation: modalFadeIn 0.2s ease-out;
+}
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+.modal-header {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(31, 41, 55, 0.5);
+}
+.modal-header h3 {
+  margin-top: 0.35rem;
+  font-size: 1.35rem;
+}
+.modal-subheading {
+  margin-top: 0.25rem;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+.modal-nav {
+  display: flex;
+  background: rgba(15, 23, 42, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0 1rem;
+  overflow-x: auto;
+}
+.tab-btn {
+  padding: 0.85rem 1.25rem;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+.tab-btn:hover {
+  color: var(--text-primary);
+}
+.tab-btn.active {
+  color: #34d399;
+  border-bottom-color: #34d399;
+}
+.modal-body {
+  padding: 1.25rem 1.5rem;
+  overflow-y: auto;
+  flex: 1;
+}
+.tab-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.85rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.tab-toolbar span {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+.toolbar-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.full-editor {
+  min-height: 380px;
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  color: #e2e8f0;
+}
+.autofill-grid-modal {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.modal-field-card {
+  padding: 0.85rem 1rem;
+  border-radius: 0.5rem;
+  background: #1f2937;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.modal-field-card:hover {
+  border-color: #34d399;
+  background: rgba(55, 65, 81, 0.8);
+}
+.modal-field-card label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 700;
+  display: block;
+}
+.modal-field-card div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.35rem;
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: #f3f4f6;
+}
+.modal-field-card div span {
+  font-size: 0.78rem;
+  color: #34d399;
+  font-weight: 600;
+}
+.modal-field-card.span-all {
+  grid-column: 1 / -1;
+}
+.modal-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  background: rgba(17, 24, 39, 0.8);
 }
 </style>

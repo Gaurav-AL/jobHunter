@@ -116,7 +116,7 @@ func RunScrapingCycle(db *gorm.DB) {
 			}
 			for _, user := range users {
 				match := services.MatchJobToProfile(user, existing)
-				if match.Score < 25 {
+				if match.Score < 50 {
 					continue
 				}
 				var matchRecord repository.JobMatch
@@ -159,6 +159,10 @@ func RunScrapingCycle(db *gorm.DB) {
 		var job repository.Job
 		if err := db.First(&job, key.jobID).Error; err != nil || !job.IsActive {
 			continue
+		}
+		var matchRecord repository.JobMatch
+		if err := db.Where("user_id = ? AND job_id = ?", key.userID, key.jobID).First(&matchRecord).Error; err != nil || matchRecord.MatchScore < 60 {
+			continue // Only auto-draft high relevance matches
 		}
 		// Only draft if an apply link is available.
 		if job.ApplyURL == "" && job.URL == "" {

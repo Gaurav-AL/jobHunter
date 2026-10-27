@@ -37,7 +37,7 @@ type ApplicantExtraction struct {
 }
 
 func generateWithAICC(prompt string) (string, error) {
-	apiKey := os.Getenv("AICC_KEY")
+	apiKey := strings.TrimSpace(os.Getenv("AICC_KEY"))
 	if apiKey == "" {
 		return "", fmt.Errorf("AICC_KEY environment variable is not set")
 	}
@@ -45,56 +45,84 @@ func generateWithAICC(prompt string) (string, error) {
 	if baseURL == "" {
 		baseURL = "https://api.ai.cc/v1"
 	}
-	model := strings.TrimSpace(os.Getenv("AICC_MODEL"))
-	if model == "" {
-		model = "gpt-4o-mini"
+	configuredModel := strings.TrimSpace(os.Getenv("AICC_MODEL"))
+	if configuredModel == "" || configuredModel == "gpt-4o-mini" {
+		configuredModel = "qwen-plus"
 	}
-	payload, err := json.Marshal(map[string]any{
-		"model": model,
-		"messages": []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.2,
-	})
-	if err != nil {
-		return "", fmt.Errorf("encode AICC request: %w", err)
+
+	// Multi-model failover list: try primary first, then robust fallbacks
+	candidateModels := []string{configuredModel}
+	for _, fallback := range []string{"qwen-plus", "glm-5", "qwen-flash"} {
+		if fallback != configuredModel {
+			candidateModels = append(candidateModels, fallback)
+		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return "", fmt.Errorf("create AICC request: %w", err)
+
+	client := &http.Client{Timeout: 45 * time.Second}
+	var lastErr error
+
+	for _, model := range candidateModels {
+		payload, err := json.Marshal(map[string]any{
+			"model":       model,
+			"messages":    []map[string]string{{"role": "user", "content": prompt}},
+			"temperature": 0.2,
+		})
+		if err != nil {
+			return "", fmt.Errorf("encode AICC request: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(payload))
+		if err != nil {
+			cancel()
+			return "", fmt.Errorf("create AICC request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		cancel()
+		if err != nil {
+			lastErr = fmt.Errorf("AICC request failed for model %s: %w", model, err)
+			log.Printf("AICC model %s network failure: %v, trying fallback...", model, err)
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("read AICC response for model %s: %w", model, err)
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("AICC returned HTTP %d for model %s: %s", resp.StatusCode, model, strings.TrimSpace(string(body)))
+			log.Printf("AICC model %s returned HTTP %d (%s), trying fallback...", model, resp.StatusCode, strings.TrimSpace(string(body)))
+			continue
+		}
+
+		var completion struct {
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(body, &completion); err != nil {
+			lastErr = fmt.Errorf("parse AICC response for model %s: %w", model, err)
+			continue
+		}
+		if len(completion.Choices) == 0 || strings.TrimSpace(completion.Choices[0].Message.Content) == "" {
+			lastErr = fmt.Errorf("AICC returned no completion content for model %s", model)
+			continue
+		}
+		log.Printf("AICC usage model=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d", model, completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
+		return strings.TrimSpace(completion.Choices[0].Message.Content), nil
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 65 * time.Second}).Do(req)
-	if err != nil {
-		return "", fmt.Errorf("AICC request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return "", fmt.Errorf("read AICC response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("AICC returned HTTP %d", resp.StatusCode)
-	}
-	var completion struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-		Choices []struct {
-			Message struct { Content string `json:"content"` } `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &completion); err != nil {
-		return "", fmt.Errorf("parse AICC response: %w", err)
-	}
-	if len(completion.Choices) == 0 || strings.TrimSpace(completion.Choices[0].Message.Content) == "" {
-		return "", fmt.Errorf("AICC returned no completion content")
-	}
-	log.Printf("AICC usage model=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d", model, completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
-	return strings.TrimSpace(completion.Choices[0].Message.Content), nil
+
+	return "", fmt.Errorf("all AICC models failed, last error: %w", lastErr)
 }
 
 // GenerateDraft uses AICC_KEY to generate a personalized job application draft.
@@ -128,13 +156,27 @@ Resume:
 	return generateWithAICC(prompt)
 }
 
-// ExtractApplicantProfile sends resume text to the configured Gemini provider
+// ExtractApplicantProfile sends resume text to the configured AI provider
 // and returns only fields supported by the resume. Unknown/legal eligibility
 // answers must remain blank for the user to supply.
 func ExtractApplicantProfile(resumeText string) (ApplicantExtraction, error) {
-	prompt := fmt.Sprintf(`Extract applicant information from this resume. Return only a JSON object with exactly these string keys: profile_summary, target_roles, skills, location, applicant_first_name, applicant_last_name, applicant_phone, applicant_address, applicant_city, applicant_region, applicant_postal_code, applicant_country, applicant_linkedin, applicant_website, applicant_github.
-
-Use only information explicitly present in the resume. For unknown fields return an empty string. Do not infer work authorization, visa sponsorship, notice period, salary, or any other legal/personal answer. Keep skills as a comma-separated string. Do not include markdown fences.
+	prompt := fmt.Sprintf(`You are an expert HR and recruitment parser. Extract applicant information from this resume.
+Return ONLY a valid JSON object (no markdown code blocks, no preamble, no commentary) with exactly these string keys:
+- profile_summary: A 2-3 sentence technical summary emphasizing years of experience, core backend/frontend stack, and notable accomplishments.
+- target_roles: Comma-separated list of suitable roles derived from the candidate's experience (e.g. "Software Development Engineer, Backend Engineer, Distributed Systems Engineer").
+- skills: Comma-separated list of ALL programming languages, frameworks, cloud platforms, databases, and developer tools explicitly found in the resume.
+- location: Candidate city and country, or "Remote / Bengaluru, India" if inferred from contact/education.
+- applicant_first_name: Candidate's first name.
+- applicant_last_name: Candidate's last name.
+- applicant_phone: Phone number with country code.
+- applicant_address: Street address (if present, else empty string).
+- applicant_city: City name (e.g. "Kurukshetra" or "Bengaluru").
+- applicant_region: State or region.
+- applicant_postal_code: Postal code (if present, else empty string).
+- applicant_country: Country (e.g. "India").
+- applicant_linkedin: LinkedIn profile URL (if present, else empty string).
+- applicant_website: Website or coding profile URL (if present, else empty string).
+- applicant_github: GitHub URL (if present, else empty string).
 
 Resume text:
 %s`, resumeText)
@@ -143,9 +185,11 @@ Resume text:
 		return ApplicantExtraction{}, err
 	}
 	response = strings.TrimSpace(response)
-	response = strings.TrimPrefix(response, "```json")
-	response = strings.TrimPrefix(response, "```")
-	response = strings.TrimSuffix(strings.TrimSpace(response), "```")
+	if start := strings.Index(response, "{"); start != -1 {
+		if end := strings.LastIndex(response, "}"); end != -1 && end > start {
+			response = response[start : end+1]
+		}
+	}
 	var extracted ApplicantExtraction
 	if err := json.Unmarshal([]byte(strings.TrimSpace(response)), &extracted); err != nil {
 		return ApplicantExtraction{}, fmt.Errorf("could not parse applicant profile response: %w", err)
@@ -156,7 +200,8 @@ Resume text:
 // GenerateTailoredResume produces a role-focused, ATS-readable resume draft.
 // The prompt forbids inventing qualifications, dates, employers, and metrics.
 func GenerateTailoredResume(resumeText, jobTitle, jobDescription string) (string, error) {
-	prompt := fmt.Sprintf(`You are editing a candidate's resume for a specific job. Return only an ATS-friendly plain-text resume draft. Use only facts explicitly present in the source resume. Do not invent skills, employers, dates, degrees, accomplishments, metrics, or certifications. You may reorder existing skills and bullets, shorten wording without changing meaning, and emphasize relevant evidence. Preserve names, contact details, job titles, employers, dates, and factual claims exactly. If the source resume does not support a job requirement, do not claim it.
+	prompt := fmt.Sprintf(`You are an expert technical career coach and resume writer.
+Tailor the candidate's resume for the target job description while strictly adhering to factual accuracy (never invent fake employers, degrees, dates, or certifications).
 
 Target job title:
 %s
@@ -164,9 +209,20 @@ Target job title:
 Target job description:
 %s
 
-Source resume and profile (include a project only if it is directly relevant to this job or the application asks for project experience; do not force unrelated projects into the resume):
+Candidate source resume:
 %s
-`, jobTitle, jobDescription, resumeText)
+
+Formatting & Content Rules:
+1. Re-align and emphasize the candidate's verified achievements, metrics, and tech stack that directly match the target job requirements.
+2. Structure the tailored resume in clean, professional plain text with uppercase section headers:
+   - CANDIDATE CONTACT DETAILS
+   - PROFESSIONAL SUMMARY (specifically tailored to emphasize alignment with %s)
+   - CORE TECHNICAL SKILLS (Languages, Frameworks, Cloud & DevOps, Databases & Tools - highlighting skills asked in the JD)
+   - PROFESSIONAL EXPERIENCE (bullet points tailored to emphasize relevant impact, architecture, and tools)
+   - PROJECTS & HIGHLIGHTS
+   - EDUCATION & CERTIFICATIONS
+3. Maintain ATS-friendly formatting (use standard bullet points •, consistent indentation, and clean text).
+4. Output ONLY the tailored resume text without markdown code blocks, explanations, or conversational filler.`, jobTitle, jobDescription, resumeText, jobTitle)
 	return generateWithAICC(prompt)
 }
 
