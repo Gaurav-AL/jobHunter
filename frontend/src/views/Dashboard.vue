@@ -507,9 +507,11 @@
               </div>
               <div class="toolbar-actions" style="display: flex; gap: 6px; flex-wrap: wrap;">
                 <button type="button" class="btn btn-sm btn-primary" @click="copyToClipboard(activeDraftModal.TailoredResume)">📋 Copy LaTeX Code</button>
-                <button type="button" class="btn btn-sm btn-secondary" @click="downloadResume(activeDraftModal)">💾 Download .tex</button>
-                <button type="button" class="btn btn-sm btn-secondary" @click="openInCompiler('latexbase')">🌐 Compile on LaTeXBase ↗</button>
+                <button type="button" class="btn btn-sm btn-success" @click="openInCompiler('latex.to')">🌐 Open in LaTeX.to ↗</button>
                 <button type="button" class="btn btn-sm btn-secondary" @click="openInCompiler('overleaf')">🌐 Overleaf ↗</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="openInCompiler('latexbase')">🌐 LaTeXBase ↗</button>
+                <button type="button" class="btn btn-sm btn-secondary" @click="downloadResume(activeDraftModal)">💾 Download .tex</button>
+                <button type="button" class="btn btn-sm btn-secondary" :disabled="regeneratingDraft" @click="regenerateCurrentDraft">{{ regeneratingDraft ? 'Regenerating…' : '⚡ Regenerate LaTeX' }}</button>
                 <button type="button" class="btn btn-sm btn-secondary" @click="saveDraft(activeDraftModal)">💾 Save</button>
               </div>
             </div>
@@ -610,6 +612,13 @@
             @click="copyToClipboard(activeDraftModal.TailoredResume)"
           >
             📋 Copy LaTeX Code
+          </button>
+          <button
+            type="button"
+            class="btn btn-success"
+            @click="openInCompiler('latex.to')"
+          >
+            🌐 Open in LaTeX.to ↗
           </button>
           <button
             type="button"
@@ -1054,8 +1063,39 @@ const prepareDraft = async (job: any) => {
   }
 };
 
-const openInCompiler = (compiler: 'latexbase' | 'overleaf') => {
-  if (compiler === 'latexbase') {
+const regeneratingDraft = ref(false);
+const regenerateCurrentDraft = async () => {
+  if (!activeDraftModal.value) return;
+  regeneratingDraft.value = true;
+  try {
+    const jobID = activeDraftModal.value.JobID;
+    const res = await apiFetch(`/api/jobs/matches/${jobID}/draft`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not regenerate LaTeX resume.');
+    await refreshAll();
+    const updated = body.draft || draftForJob(jobID);
+    if (updated) {
+      activeDraftModal.value = updated;
+    }
+    alert('LaTeX Resume regenerated successfully!');
+  } catch (err: any) {
+    alert(err.message || 'Could not regenerate LaTeX resume.');
+  } finally {
+    regeneratingDraft.value = false;
+  }
+};
+
+const openInCompiler = async (compiler: 'latex.to' | 'latexbase' | 'overleaf') => {
+  const content = activeDraftModal.value?.TailoredResume || '';
+  if (content) {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch { /* clipboard fallback */ }
+  }
+  if (compiler === 'latex.to') {
+    window.open('https://latex.to', '_blank');
+    alert('LaTeX code copied to your clipboard! In LaTeX.to, select all, paste (Cmd+V / Ctrl+V), and click Preview to render your PDF.');
+  } else if (compiler === 'latexbase') {
     window.open('https://latexbase.com', '_blank');
   } else {
     window.open('https://www.overleaf.com/project', '_blank');

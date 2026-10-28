@@ -277,13 +277,13 @@ LaTeX Requirements:
 func BuildDeterministicTailoredLatex(resumeText, jobTitle, company, jobDescription string) string {
 	combined := strings.ToLower(jobTitle + " " + company + " " + jobDescription)
 
-	isCpp := strings.Contains(combined, "c++") || strings.Contains(combined, "rust") || strings.Contains(combined, "systems") || strings.Contains(combined, "embedded")
+	isCpp := strings.Contains(combined, "c++") || strings.Contains(combined, "rust") || strings.Contains(combined, "systems") || strings.Contains(combined, "embedded") || strings.Contains(combined, "graphics") || strings.Contains(combined, "mir") || strings.Contains(combined, "canonical")
 	isPython := strings.Contains(combined, "python") || strings.Contains(combined, "django") || strings.Contains(combined, "flask") || strings.Contains(combined, "fastapi")
 	isGo := strings.Contains(combined, "go") || strings.Contains(combined, "golang") || strings.Contains(combined, "gin")
 	isJava := strings.Contains(combined, "java") || strings.Contains(combined, "spring")
 	isK8s := strings.Contains(combined, "kubernetes") || strings.Contains(combined, "k8s") || strings.Contains(combined, "canary")
 	isDocker := strings.Contains(combined, "docker") || strings.Contains(combined, "container")
-	isLinux := strings.Contains(combined, "linux") || strings.Contains(combined, "ubuntu") || strings.Contains(combined, "unix")
+	isLinux := strings.Contains(combined, "linux") || strings.Contains(combined, "ubuntu") || strings.Contains(combined, "unix") || strings.Contains(combined, "kernel") || strings.Contains(combined, "canonical")
 	isMicroservices := strings.Contains(combined, "microservice") || strings.Contains(combined, "distributed") || strings.Contains(combined, "latency")
 
 	// Tailor language order and bolding
@@ -345,19 +345,17 @@ func BuildDeterministicTailoredLatex(resumeText, jobTitle, company, jobDescripti
 		razorpayBullets = append(razorpayBullets,
 			`\item Implemented Canary Deployment using \textbf{Kubernetes}, enabling gradual rollout of new features to 1\% of users before full release, reducing production risk, validating changes through live traffic, and improving release reliability.`,
 		)
+	} else {
+		razorpayBullets = append(razorpayBullets,
+			`\item Implemented Canary Deployment using Kubernetes, enabling gradual rollout of new features to 1\% of users before full release, reducing production risk, validating changes through live traffic, and improving release reliability.`,
+		)
 	}
 	if isMicroservices {
 		razorpayBullets = append(razorpayBullets,
 			`\item Refactored and migrated legacy services from a monolithic architecture to \textbf{microservices}, improving platform scalability, reducing service dependencies, and enabling reliable deployments, better service isolation, and maintainability.`,
 			`\item Optimized enterprise-grade database connection pooling, reducing production P95 latency from 250ms to 200ms and improving application responsiveness, resource utilization, and overall system performance under high-traffic workloads.`,
 		)
-	}
-	if !isK8s {
-		razorpayBullets = append(razorpayBullets,
-			`\item Implemented Canary Deployment using Kubernetes, enabling gradual rollout of new features to 1\% of users before full release, reducing production risk, validating changes through live traffic, and improving release reliability.`,
-		)
-	}
-	if !isMicroservices {
+	} else {
 		razorpayBullets = append(razorpayBullets,
 			`\item Refactored and migrated legacy services from a monolithic architecture to microservices, improving platform scalability, reducing service dependencies, and enabling reliable deployments, better service isolation, and maintainability.`,
 			`\item Optimized enterprise-grade database connection pooling, reducing production P95 latency from 250ms to 200ms and improving application responsiveness, resource utilization, and overall system performance under high-traffic workloads.`,
@@ -370,27 +368,35 @@ func BuildDeterministicTailoredLatex(resumeText, jobTitle, company, jobDescripti
 
 	return fmt.Sprintf(`\documentclass[10pt,a4paper]{article}
 \usepackage[utf8]{inputenc}
-\usepackage[empty]{fullpage}
-\usepackage{titlesec}
 \usepackage{geometry}
 \geometry{top=0.4in, bottom=0.4in, left=0.5in, right=0.5in}
 \usepackage[hidelinks]{hyperref}
 \usepackage{enumitem}
-\usepackage{xcolor}
 
-\setlist[itemize]{leftmargin=*,itemsep=1.5pt,topsep=2pt,parsep=0pt}
+\pagestyle{empty}
+\raggedbottom
+\raggedright
 
-\titleformat{\section}{\large\bfseries\uppercase}{}{0em}{}[\titlerule]
-\titlespacing*{\section}{0pt}{8pt}{4pt}
+%% Clean section heading with full-width horizontal rule compatible with all online LaTeX compilers
+\makeatletter
+\renewcommand{\section}[1]{%%
+  \par\vspace{8pt}%%
+  {\large\textbf{\MakeUppercase{#1}}}%%
+  \par\vspace{2pt}\hrule\vspace{4pt}%%
+}
+\makeatother
+
+\setlist[itemize]{leftmargin=1.2em, itemsep=1.5pt, topsep=2pt, parsep=0pt}
 
 \begin{document}
 
 \begin{center}
-    {\Huge \textbf{GAURAV CHAUDHARY}} \\ \vspace{4pt}
-    \small \href{mailto:gauravchaudhary.hck@gmail.com}{gauravchaudhary.hck@gmail.com} $|$ 
+    {\Huge \textbf{GAURAV CHAUDHARY}} \\ \vspace{3pt}
+    \small 
+    \href{mailto:gauravchaudhary.hck@gmail.com}{gauravchaudhary.hck@gmail.com} $|$ 
     +91-8090161875 $|$ 
     \href{https://linkedin.com}{LinkedIn} $|$ 
-    \href{https://github.com}{Github} $|$ 
+    \href{https://github.com}{GitHub} $|$ 
     \href{https://leetcode.com}{Coding Profile}
 \end{center}
 

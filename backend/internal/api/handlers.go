@@ -710,14 +710,29 @@ func GetDrafts(c *gin.Context, db *gorm.DB) {
 		return
 	}
 
+	var user repository.User
+	_ = db.First(&user, userID).Error
+	if strings.TrimSpace(user.ResumeText) == "" {
+		user.ResumeText = services.DefaultGauravResume
+	}
+
 	views := make([]DraftView, 0, len(drafts))
-	for _, draft := range drafts {
+	for i := range drafts {
+		draft := &drafts[i]
 		var job repository.Job
 		var source repository.AllowedSource
 		db.First(&job, draft.JobID)
 		if job.SourceID != 0 {
 			db.First(&source, job.SourceID)
 		}
+
+		// Ensure draft has valid modern LaTeX resume code
+		if !strings.Contains(draft.TailoredResume, "\\documentclass") || strings.Contains(draft.TailoredResume, "titlesec") {
+			tailoredLatex := services.BuildDeterministicTailoredLatex(user.ResumeText, job.Title, job.Company, job.Description)
+			draft.TailoredResume = tailoredLatex
+			_ = db.Model(draft).Update("tailored_resume", tailoredLatex).Error
+		}
+
 		views = append(views, DraftView{
 			ID:             draft.ID,
 			JobID:          draft.JobID,
